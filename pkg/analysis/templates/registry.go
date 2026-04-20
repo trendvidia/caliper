@@ -8,6 +8,8 @@ package templates
 
 import (
 	"go/token"
+	"runtime"
+	"sync"
 
 	"github.com/trendvidia/gocaliper/pkg/analysis"
 	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
@@ -55,12 +57,43 @@ func BuildContext(engine *analysis.Engine, fc *analysis.FuncContext) *TemplateCo
 }
 
 // RunTemplate runs a template across all functions in the engine.
+// Analysis of each function is parallelized for performance on large codebases.
 func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
-	var allFindings []Finding
-	for _, fc := range engine.FuncNodes() {
-		ctx := BuildContext(engine, fc)
-		findings := tmpl.Analyze(ctx)
-		allFindings = append(allFindings, findings...)
+	funcs := engine.FuncNodes()
+	if len(funcs) <= 1 {
+		if len(funcs) == 0 {
+			return nil
+		}
+		ctx := BuildContext(engine, funcs[0])
+		return tmpl.Analyze(ctx)
 	}
+
+	var (
+		mu          sync.Mutex
+		allFindings []Finding
+		wg          sync.WaitGroup
+	)
+
+	sem := make(chan struct{}, runtime.GOMAXPROCS(0))
+
+	for _, fc := range funcs {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx := BuildContext(engine, fc)
+			findings := tmpl.Analyze(ctx)
+
+			if len(findings) > 0 {
+				mu.Lock()
+				allFindings = append(allFindings, findings...)
+				mu.Unlock()
+			}
+		}()
+	}
+
+	wg.Wait()
 	return allFindings
 }

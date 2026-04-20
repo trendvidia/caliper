@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -58,8 +59,7 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 			packages.NeedFiles |
 			packages.NeedSyntax |
 			packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedDeps,
+			packages.NeedTypesInfo,
 		Dir: dir,
 	}
 
@@ -199,6 +199,16 @@ func IsWorkspace(dir string) bool {
 func fileExists(path string) bool {
 	_, err := os.Stat(path)
 	return err == nil
+}
+
+// NewEngineForFile creates an engine that loads only the package containing
+// the given file. This is much faster than NewEngine for single-file operations.
+func NewEngineForFile(filePath string) (*Engine, error) {
+	absPath, err := filepath.Abs(filePath)
+	if err != nil {
+		return nil, fmt.Errorf("resolving file path: %w", err)
+	}
+	return NewEngineWithOptions(filepath.Dir(absPath), DefaultOptions(), "file="+absPath)
 }
 
 // FuncContext bundles a function declaration with its surrounding context.

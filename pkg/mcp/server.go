@@ -16,6 +16,7 @@ import (
 	"go/types"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -31,14 +32,17 @@ import (
 
 // Server is the GoCaliper MCP server.
 type Server struct {
-	mcp *mcpserver.MCPServer
-	iso *iso.Registry
+	mcp   *mcpserver.MCPServer
+	iso   *iso.Registry
+	mu    sync.RWMutex
+	cache map[string]*analysis.Engine // abs path -> cached engine
 }
 
 // NewServer creates and configures the MCP server with all tools.
 func NewServer() (*Server, error) {
 	s := &Server{
-		iso: iso.NewRegistry(),
+		iso:   iso.NewRegistry(),
+		cache: make(map[string]*analysis.Engine),
 	}
 
 	s.mcp = mcpserver.NewMCPServer(
@@ -73,6 +77,41 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(listEquivalencesTool, s.handleListEquivalences)
 }
 
+// getEngine returns a cached engine for the given path, creating one on cache miss.
+func (s *Server) getEngine(path string) (*analysis.Engine, error) {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		return nil, fmt.Errorf("resolving path: %w", err)
+	}
+
+	s.mu.RLock()
+	if eng, ok := s.cache[absPath]; ok {
+		s.mu.RUnlock()
+		return eng, nil
+	}
+	s.mu.RUnlock()
+
+	eng, err := analysis.NewEngine(absPath)
+	if err != nil {
+		return nil, err
+	}
+
+	s.mu.Lock()
+	s.cache[absPath] = eng
+	s.mu.Unlock()
+
+	return eng, nil
+}
+
+// invalidateEngine removes the cached engine for the given path.
+// Must be called after transforms that modify files on disk.
+func (s *Server) invalidateEngine(path string) {
+	absPath, _ := filepath.Abs(path)
+	s.mu.Lock()
+	delete(s.cache, absPath)
+	s.mu.Unlock()
+}
+
 // --------------------------------------------------------------------------
 // Handler implementations
 // --------------------------------------------------------------------------
@@ -89,7 +128,7 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 		return errorResult("Invalid pattern: %v", err), nil
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -135,7 +174,7 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 		path = "."
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -272,7 +311,7 @@ func (s *Server) handleFindResourceLeak(ctx context.Context, req mcpsdk.CallTool
 		return errorResult("Invalid acquire pattern: %v", err), nil
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -298,7 +337,7 @@ func (s *Server) handleFindUncheckedError(ctx context.Context, req mcpsdk.CallTo
 		IncludeExplicit: includeExplicit,
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -322,7 +361,7 @@ func (s *Server) handleFindLockViolation(ctx context.Context, req mcpsdk.CallToo
 		CheckBlockingUnderLock: checkBlocking,
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -340,7 +379,7 @@ func (s *Server) handleFindNilDeref(ctx context.Context, req mcpsdk.CallToolRequ
 		path = "."
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -373,7 +412,7 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 		path = "."
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -536,7 +575,7 @@ func (s *Server) handleApplyTransform(ctx context.Context, req mcpsdk.CallToolRe
 		path = "."
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -550,6 +589,7 @@ func (s *Server) handleApplyTransform(ctx context.Context, req mcpsdk.CallToolRe
 	if preview {
 		result, err = rw.Preview()
 	} else {
+		s.invalidateEngine(path)
 		result, err = rw.Apply()
 	}
 	if err != nil {
@@ -584,7 +624,7 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 		return errorResult("Invalid rules format: %v", err), nil
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -595,6 +635,7 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 	if preview {
 		result, err = migration.Preview()
 	} else {
+		s.invalidateEngine(path)
 		result, err = migration.Apply()
 	}
 	if err != nil {
@@ -615,7 +656,7 @@ func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToo
 		path = "."
 	}
 
-	engine, err := analysis.NewEngine(path)
+	engine, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
@@ -629,6 +670,7 @@ func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToo
 	if preview {
 		result, err = inserter.Preview()
 	} else {
+		s.invalidateEngine(path)
 		result, err = inserter.Apply()
 	}
 	if err != nil {
@@ -651,7 +693,7 @@ func (s *Server) handleExplainMatch(ctx context.Context, req mcpsdk.CallToolRequ
 	// Add equivalences for richer matching.
 	pat = pat.WithEquivalences(s.iso)
 
-	engine, err := analysis.NewEngine(filepath.Dir(file))
+	engine, err := analysis.NewEngineForFile(file)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}

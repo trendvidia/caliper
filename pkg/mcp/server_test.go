@@ -398,3 +398,110 @@ func TestMCP_InvalidPattern(t *testing.T) {
 		t.Error("expected error result for invalid pattern")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Engine caching
+// --------------------------------------------------------------------------
+
+func TestServer_EngineCaching(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+import "io"
+
+func example(c io.Closer) {
+	c.Close()
+}
+`,
+	})
+
+	srv, _ := NewServer()
+	req := makeRequest(map[string]any{
+		"pattern": "$x.Close()",
+		"path":    dir,
+	})
+
+	// First call populates cache.
+	result1, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data1 := resultJSON(t, result1)
+
+	// Second call should use cached engine.
+	result2, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data2 := resultJSON(t, result2)
+
+	if data1["total_matches"] != data2["total_matches"] {
+		t.Errorf("cached result mismatch: %v vs %v", data1["total_matches"], data2["total_matches"])
+	}
+
+	// Verify cache entry exists.
+	srv.mu.RLock()
+	cached := len(srv.cache)
+	srv.mu.RUnlock()
+
+	if cached != 1 {
+		t.Errorf("expected 1 cached engine, got %d", cached)
+	}
+}
+
+func TestServer_CacheInvalidation(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+func greet() string {
+	return hello()
+}
+
+func hello() string { return "hi" }
+`,
+	})
+
+	srv, _ := NewServer()
+
+	// Populate cache.
+	req := makeRequest(map[string]any{
+		"pattern": "hello()",
+		"path":    dir,
+	})
+	_, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.RLock()
+	cached := len(srv.cache)
+	srv.mu.RUnlock()
+	if cached != 1 {
+		t.Fatalf("expected 1 cached engine, got %d", cached)
+	}
+
+	// Apply a non-preview transform (should invalidate cache).
+	transformReq := makeRequest(map[string]any{
+		"match":   "hello()",
+		"replace": "howdy()",
+		"path":    dir,
+		"preview": false,
+	})
+	_, err = srv.handleApplyTransform(context.Background(), transformReq)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	srv.mu.RLock()
+	cached = len(srv.cache)
+	srv.mu.RUnlock()
+	if cached != 0 {
+		t.Errorf("expected 0 cached engines after invalidation, got %d", cached)
+	}
+
+	// Verify file was actually modified on disk.
+	content, _ := os.ReadFile(filepath.Join(dir, "code.go"))
+	if !strings.Contains(string(content), "howdy()") {
+		t.Error("expected file to contain howdy() after transform")
+	}
+}

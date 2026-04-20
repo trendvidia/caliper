@@ -225,3 +225,31 @@ func TestEngine_Packages(t *testing.T) {
 		t.Errorf("expected package name testpkg, got %s", pkgs[0].Name)
 	}
 }
+
+// --------------------------------------------------------------------------
+// File-scoped engine loading
+// --------------------------------------------------------------------------
+
+func TestNewEngineForFile(t *testing.T) {
+	dir := setupTestProject(t, map[string]string{
+		"code.go": "package testpkg\n\nfunc Hello() {}\nfunc World() {}\n",
+	})
+
+	engine, err := NewEngineForFile(filepath.Join(dir, "code.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	pkgs := engine.Packages()
+	if len(pkgs) != 1 {
+		t.Fatalf("expected 1 package, got %d", len(pkgs))
+	}
+	if pkgs[0].Name != "testpkg" {
+		t.Errorf("expected package name testpkg, got %s", pkgs[0].Name)
+	}
+
+	funcs := engine.FuncNodes()
+	if len(funcs) != 2 {
+		t.Errorf("expected 2 functions, got %d", len(funcs))
+	}
+}
