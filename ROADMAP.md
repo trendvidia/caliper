@@ -202,7 +202,23 @@ Coccinelle's `spatch` is a CLI tool that processes entire kernel trees. GoCalipe
 - [ ] Parallel file processing — process packages concurrently with worker pool (already have `parmap`-style infra in engine)
 - [ ] `--include`/`--exclude` glob filters for targeting specific files/packages
 - [ ] `--diff` mode — only analyze files changed in a git diff (PR-scoped analysis)
-- [ ] Configuration via `.gocaliper.yaml` `patterns:` to auto-discover `.gcl`/`.gsp` files
+- [ ] Configuration via `.gocaliper.pxf` `patterns:` to auto-discover `.gcl`/`.gsp` files
+
+### LLM-Driven Policy Enforcement
+
+The most powerful workflow: humans write policy documents in natural language, the LLM translates them into enforceable `.gcl` rules, and CI runs the rules without an LLM in the loop.
+
+- [ ] `generate_policy_rules` MCP meta-tool — given a policy description + codebase, generates `.gcl` rules:
+  - Reads natural language policy (from a file, URL, or inline text)
+  - Explores codebase via `find_pattern`/`find_type_usage` to learn conventions
+  - Generates `.gcl` rules encoding each policy item
+  - Validates rules via `run_patterns`, reports false positive rate
+  - Outputs ready-to-commit `.gcl` file + suggested `.gocaliper.pxf` config
+- [ ] Policy validation loop — iteratively refine generated rules: run against codebase, present findings to user, adjust patterns to reduce false positives
+- [ ] CI config generation — produce GitHub Actions / GitLab CI snippets that run `gocaliper check` on PRs
+- [ ] Policy drift detection — re-run policy→rules translation periodically, diff against committed rules, flag policies that have drifted from enforcement
+- [ ] POLICIES.md convention — standard location and format for policy documents that the tool can discover and process
+- [ ] Multi-repo policy distribution — generate rules once, publish to a shared pattern library, consume across repos via `.gocaliper.pxf` remote patterns
 
 ### Isomorphism Files
 
@@ -216,7 +232,7 @@ Coccinelle loads equivalences from `.iso` files that users can customize. GoCali
   @@
   E == nil => !(E != nil)
   ```
-- [ ] Load `.iso` files from `.gocaliper.yaml` config or `--iso` CLI flag
+- [ ] Load `.iso` files from `.gocaliper.pxf` config or `--iso` CLI flag
 - [ ] Conditional isomorphisms — only apply in certain contexts (e.g., error-handling isos only in `if err != nil` blocks)
 - [ ] Isomorphism composition — apply multiple `.iso` files, with priority ordering
 
@@ -224,5 +240,5 @@ Coccinelle loads equivalences from `.iso` files that users can customize. GoCali
 
 - [ ] Docker image for CI usage
 - [ ] VS Code extension that runs GoCaliper as an MCP server
-- [ ] `gocaliper init` command — scaffold `.gocaliper.yaml` and example `.gcl` files
+- [ ] `gocaliper init` command — scaffold `.gocaliper.pxf` and example `.gcl` files
 - [ ] Pattern library repository — community-maintained `.gcl`/`.gsp` files for common Go idioms and migrations
