@@ -482,3 +482,311 @@ func mapChecked(flag bool) {
 		t.Errorf("expected no nil deref when ok is checked, got %d: %s", len(nils), nils[0].Message)
 	}
 }
+
+// --------------------------------------------------------------------------
+// SQLInjection tests
+// --------------------------------------------------------------------------
+
+func TestSQLInjection_Concatenation(t *testing.T) {
+	src := `package testpkg
+
+type DB struct{}
+
+func (db *DB) Query(query string, args ...interface{}) {}
+func (db *DB) Exec(query string, args ...interface{}) {}
+
+func vulnerable(id string) {
+	db := &DB{}
+	db.Query("SELECT * FROM users WHERE id=" + id)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SQLInjection{}
+	findings := RunTemplate(engine, tmpl)
+	sqli := findingsOfKind(findings, "sql_injection")
+	if len(sqli) == 0 {
+		t.Error("expected sql_injection finding for string concatenation in Query")
+	}
+}
+
+func TestSQLInjection_Parameterized(t *testing.T) {
+	src := `package testpkg
+
+type DB struct{}
+
+func (db *DB) Query(query string, args ...interface{}) {}
+
+func safe(id string) {
+	db := &DB{}
+	db.Query("SELECT * FROM users WHERE id=?", id)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SQLInjection{}
+	findings := RunTemplate(engine, tmpl)
+	sqli := findingsOfKind(findings, "sql_injection")
+	if len(sqli) > 0 {
+		t.Errorf("expected no sql_injection finding for parameterized query, got %d: %s", len(sqli), sqli[0].Message)
+	}
+}
+
+func TestSQLInjection_StringLiteral(t *testing.T) {
+	src := `package testpkg
+
+type DB struct{}
+
+func (db *DB) Query(query string, args ...interface{}) {}
+
+func literal() {
+	db := &DB{}
+	db.Query("SELECT 1")
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SQLInjection{}
+	findings := RunTemplate(engine, tmpl)
+	sqli := findingsOfKind(findings, "sql_injection")
+	if len(sqli) > 0 {
+		t.Errorf("expected no sql_injection finding for string literal query, got %d: %s", len(sqli), sqli[0].Message)
+	}
+}
+
+func TestSQLInjection_Sprintf(t *testing.T) {
+	src := `package testpkg
+
+import "fmt"
+
+type DB struct{}
+
+func (db *DB) Query(query string, args ...interface{}) {}
+
+func sprintfInjection(name string) {
+	db := &DB{}
+	db.Query(fmt.Sprintf("SELECT * FROM users WHERE name='%s'", name))
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SQLInjection{}
+	findings := RunTemplate(engine, tmpl)
+	sqli := findingsOfKind(findings, "sql_injection")
+	if len(sqli) == 0 {
+		t.Error("expected sql_injection finding for fmt.Sprintf query construction")
+	}
+}
+
+// --------------------------------------------------------------------------
+// ContextMisuse tests
+// --------------------------------------------------------------------------
+
+func TestContextMisuse_BackgroundWithParent(t *testing.T) {
+	src := `package testpkg
+
+import "context"
+
+func hasParent(ctx context.Context) {
+	bg := context.Background()
+	_ = bg
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ContextMisuse{FlagTodo: true}
+	findings := RunTemplate(engine, tmpl)
+	misuse := findingsOfKind(findings, "context_misuse")
+	if len(misuse) == 0 {
+		t.Error("expected context_misuse finding for context.Background() when parent ctx available")
+	}
+}
+
+func TestContextMisuse_NoParentContext(t *testing.T) {
+	src := `package testpkg
+
+import "context"
+
+func noParent() {
+	bg := context.Background()
+	_ = bg
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ContextMisuse{FlagTodo: true}
+	findings := RunTemplate(engine, tmpl)
+	// Filter to only Background-related findings.
+	var bgFindings []Finding
+	for _, f := range findingsOfKind(findings, "context_misuse") {
+		if strings.Contains(f.Message, "Background") {
+			bgFindings = append(bgFindings, f)
+		}
+	}
+	if len(bgFindings) > 0 {
+		t.Errorf("expected no context_misuse finding for Background() without parent ctx, got %d: %s",
+			len(bgFindings), bgFindings[0].Message)
+	}
+}
+
+func TestContextMisuse_TodoFlagged(t *testing.T) {
+	src := `package testpkg
+
+import "context"
+
+func usesTodo() {
+	ctx := context.TODO()
+	_ = ctx
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ContextMisuse{FlagTodo: true}
+	findings := RunTemplate(engine, tmpl)
+	misuse := findingsOfKind(findings, "context_misuse")
+	if len(misuse) == 0 {
+		t.Error("expected context_misuse finding for context.TODO() when FlagTodo=true")
+	}
+}
+
+func TestContextMisuse_TodoNotFlagged(t *testing.T) {
+	src := `package testpkg
+
+import "context"
+
+func usesTodo() {
+	ctx := context.TODO()
+	_ = ctx
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ContextMisuse{FlagTodo: false}
+	findings := RunTemplate(engine, tmpl)
+	misuse := findingsOfKind(findings, "context_misuse")
+	if len(misuse) > 0 {
+		t.Errorf("expected no context_misuse finding for context.TODO() when FlagTodo=false, got %d: %s",
+			len(misuse), misuse[0].Message)
+	}
+}
+
+// --------------------------------------------------------------------------
+// GoroutineLeak tests
+// --------------------------------------------------------------------------
+
+func TestGoroutineLeak_NoTermination(t *testing.T) {
+	src := `package testpkg
+
+func work() {}
+
+func leaker() {
+	go func() {
+		for {
+			work()
+		}
+	}()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &GoroutineLeak{}
+	findings := RunTemplate(engine, tmpl)
+	leaks := findingsOfKind(findings, "goroutine_leak")
+	if len(leaks) == 0 {
+		t.Error("expected goroutine leak finding for goroutine without termination mechanism")
+	}
+}
+
+func TestGoroutineLeak_WithContextDone(t *testing.T) {
+	src := `package testpkg
+
+import "context"
+
+func safe(ctx context.Context) {
+	go func() {
+		<-ctx.Done()
+	}()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &GoroutineLeak{}
+	findings := RunTemplate(engine, tmpl)
+	leaks := findingsOfKind(findings, "goroutine_leak")
+	if len(leaks) > 0 {
+		t.Errorf("expected no goroutine leak with ctx.Done(), got %d: %s", len(leaks), leaks[0].Message)
+	}
+}
+
+func TestGoroutineLeak_NoGoroutines(t *testing.T) {
+	src := `package testpkg
+
+func noGoroutines() {
+	x := 1
+	_ = x
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &GoroutineLeak{}
+	findings := RunTemplate(engine, tmpl)
+	leaks := findingsOfKind(findings, "goroutine_leak")
+	if len(leaks) > 0 {
+		t.Errorf("expected no findings for function without goroutines, got %d", len(leaks))
+	}
+}
+
+// --------------------------------------------------------------------------
+// RaceCondition tests
+// --------------------------------------------------------------------------
+
+func TestRaceCondition_SharedVariable(t *testing.T) {
+	src := `package testpkg
+
+func racer() {
+	x := 0
+	go func() {
+		x = 1
+	}()
+	x = 2
+	_ = x
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) == 0 {
+		t.Error("expected race condition finding for shared variable modified in goroutine and main")
+	}
+}
+
+func TestRaceCondition_NoSharing(t *testing.T) {
+	src := `package testpkg
+
+func noRace() {
+	go func() {
+		x := 1
+		_ = x
+	}()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race condition findings for goroutine with only local variables, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestRaceCondition_LoopVariable(t *testing.T) {
+	src := `package testpkg
+
+import "fmt"
+
+func loopRace() {
+	for i := 0; i < 10; i++ {
+		go func() {
+			fmt.Println(i)
+		}()
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) == 0 {
+		t.Error("expected race condition finding for loop variable captured by goroutine closure")
+	}
+}

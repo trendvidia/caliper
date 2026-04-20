@@ -54,24 +54,24 @@
 - [x] Large codebase performance — lazy package loading, incremental analysis
 - [x] Multiple modules / workspace mode (`go.work`)
 
-## Phase 4 — Advanced Analysis
+## Phase 4 — Advanced Analysis ✓
 
 ### Inter-procedural Analysis
-- [ ] Cross-function metavariable binding — find a function definition, then match all its call sites (Coccinelle's rule chaining across files)
-- [ ] Call graph construction using `golang.org/x/tools/go/callgraph` (CHA, RTA, or pointer analysis)
-- [ ] Taint tracking — trace a value from source (e.g., `http.Request`) to sink (e.g., `sql.Query`) across function boundaries
+- [x] Cross-function metavariable binding — find a function definition, then match all its call sites (Coccinelle's rule chaining across files)
+- [x] Call graph construction using `golang.org/x/tools/go/callgraph` (CHA, RTA, or pointer analysis)
+- [x] Taint tracking — trace a value from source (e.g., `http.Request`) to sink (e.g., `sql.Query`) across function boundaries
 
 ### Richer Path Properties
-- [ ] `EG` (for all paths, globally) — property holds on every state of every path, not just eventually
-- [ ] Nested path quantifiers — "on all paths from Lock to Unlock, there exists no path through a blocking op" (currently flat)
-- [ ] Loop-sensitive analysis — distinguish "first iteration" from "subsequent iterations"
-- [ ] Context-sensitive analysis — track `context.Context` cancellation paths
+- [x] `EG` (for all paths, globally) — property holds on every state of every path, not just eventually
+- [x] Nested path quantifiers — "on all paths from Lock to Unlock, there exists no path through a blocking op" (currently flat)
+- [x] Loop-sensitive analysis — distinguish "first iteration" from "subsequent iterations"
+- [x] Context-sensitive analysis — track `context.Context` cancellation paths
 
 ### Additional Templates
-- [ ] `find_goroutine_leak` — goroutine started but channel/context never closed
-- [ ] `find_sql_injection` — string concatenation into SQL query
-- [ ] `find_race_condition` — shared variable accessed from goroutine without synchronization
-- [ ] `find_context_misuse` — context.Background() used where a parent context is available
+- [x] `find_goroutine_leak` — goroutine started but channel/context never closed
+- [x] `find_sql_injection` — string concatenation into SQL query
+- [x] `find_race_condition` — shared variable accessed from goroutine without synchronization
+- [x] `find_context_misuse` — context.Background() used where a parent context is available
 
 ## Phase 5 — Developer Experience
 

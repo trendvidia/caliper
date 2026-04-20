@@ -553,6 +553,214 @@ might match, or to debug unexpected matches from equivalence expansion.`,
 	},
 }
 
+// --------------------------------------------------------------------------
+// 5. Advanced Analysis (Phase 4)
+// --------------------------------------------------------------------------
+
+var findGoroutineLeakTool = mcpsdk.Tool{
+	Name: "find_goroutine_leak",
+	Description: `Find goroutines that may never terminate, causing goroutine leaks.
+
+A goroutine leak occurs when a goroutine is started but has no way to
+terminate — no channel close, no context cancellation, no return path.
+Leaked goroutines consume memory and scheduling resources indefinitely.
+
+WHAT IT CATCHES:
+  - go func() with an infinite loop and no exit mechanism
+  - go func() waiting on a channel that is never closed
+  - go func() without select on context.Done()
+  - Goroutines started without any termination signal
+
+USE THIS TOOL WHEN: reviewing concurrent code, investigating memory leaks,
+or auditing goroutine lifecycle management.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+		},
+	},
+}
+
+var findSQLInjectionTool = mcpsdk.Tool{
+	Name: "find_sql_injection",
+	Description: `Find potential SQL injection vulnerabilities where user-controlled strings
+are concatenated into SQL queries instead of using parameterized queries.
+
+WHAT IT CATCHES:
+  - db.Query("SELECT ... " + userInput)
+  - db.Exec(fmt.Sprintf("INSERT ... %s", userInput))
+  - Any string concatenation or formatting into Query/Exec/QueryRow calls
+  - Both direct and indirect concatenation patterns
+
+WHAT IS SAFE:
+  - db.Query("SELECT * FROM users WHERE id = ?", id) (parameterized)
+  - db.Query(constantQuery)  (compile-time constant)
+  - db.Query("SELECT 1")     (string literal)
+
+USE THIS TOOL WHEN: auditing code for SQL injection vulnerabilities,
+reviewing database access patterns, or checking user input handling.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"use_taint_tracking": map[string]any{
+				"type":        "boolean",
+				"description": "If true, trace values from HTTP request inputs to SQL queries across function boundaries. More thorough but slower. Default: false.",
+			},
+		},
+	},
+}
+
+var findRaceConditionTool = mcpsdk.Tool{
+	Name: "find_race_condition",
+	Description: `Find potential data races where shared variables are accessed from
+goroutines without proper synchronization.
+
+WHAT IT CATCHES:
+  - Variable modified in main goroutine and read/written in go func() closure
+  - Classic loop variable capture: go func() { use(i) }() in a for loop
+  - Map accessed concurrently without sync.RWMutex
+  - Shared struct fields modified without mutex protection
+
+This performs static analysis — for runtime detection, use 'go test -race'.
+Static analysis can find races that tests don't cover.
+
+USE THIS TOOL WHEN: reviewing concurrent code, investigating intermittent
+bugs, or auditing goroutine safety.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+		},
+	},
+}
+
+var findContextMisuseTool = mcpsdk.Tool{
+	Name: "find_context_misuse",
+	Description: `Find places where context.Background() is used inside a function that
+already receives a parent context, or where context.TODO() appears in
+production code.
+
+WHAT IT CATCHES:
+  - Function has a context.Context parameter but calls context.Background()
+  - context.WithCancel(context.Background()) where parent ctx is available
+  - context.TODO() in non-test code (configurable)
+
+WHY THIS MATTERS:
+  Using context.Background() when a parent context is available breaks
+  the context chain — the parent's cancellation, deadline, and values
+  won't propagate. This causes goroutine leaks and timeout violations.
+
+USE THIS TOOL WHEN: reviewing context usage patterns, investigating
+timeout or cancellation issues, or enforcing context propagation rules.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"flag_todo": map[string]any{
+				"type":        "boolean",
+				"description": "If true (default), also flag context.TODO() usage. Set to false if TODO is acceptable in your codebase.",
+			},
+		},
+	},
+}
+
+var findTaintFlowTool = mcpsdk.Tool{
+	Name: "find_taint_flow",
+	Description: `Trace data flow from untrusted sources (e.g., HTTP request parameters) to
+sensitive sinks (e.g., SQL queries, command execution) across function
+boundaries. This is the most powerful security analysis tool — it
+understands the call graph and tracks values through function arguments,
+returns, and assignments.
+
+HOW IT WORKS:
+  You specify a source type (where tainted data enters) and a sink function
+  (where tainted data must not reach). The tool builds a call graph and
+  traces values from source to sink, reporting any unsanitized flows.
+
+EXAMPLES:
+  Find HTTP request data flowing to SQL queries:
+    source_type: "*net/http.Request"
+    sink_function: "database/sql.Query"
+
+  Find user input flowing to command execution:
+    source_type: "*net/http.Request"
+    sink_function: "os/exec.Command"
+
+USE THIS TOOL WHEN: doing security audits, checking for injection
+vulnerabilities, or tracing untrusted data flow.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"source_type": map[string]any{
+				"type":        "string",
+				"description": "Type of the taint source. Examples: '*net/http.Request', 'os.Args'",
+			},
+			"sink_function": map[string]any{
+				"type":        "string",
+				"description": "Function that should not receive tainted data. Format: 'package.Function'. Examples: 'database/sql.Query', 'os/exec.Command'",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+		},
+		Required: []string{"source_type", "sink_function"},
+	},
+}
+
+var findCallSitesTool = mcpsdk.Tool{
+	Name: "find_call_sites",
+	Description: `Find all call sites of a function across the codebase using call graph
+analysis. Unlike text search, this resolves interface method calls and
+function values to find all places where a function might actually be
+called at runtime.
+
+This uses static call graph analysis — it can find calls through
+interfaces, function values, and method sets that text search would miss.
+
+EXAMPLES:
+  Find all places Close() is called:
+    function_pattern: "$x.Close()"
+
+  Find all callers of a specific function:
+    function_pattern: "processRequest($args...)"
+
+USE THIS TOOL WHEN: understanding how a function is used, preparing for
+refactoring, or auditing call patterns.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"function_pattern": map[string]any{
+				"type":        "string",
+				"description": "Pattern matching the function to find call sites for. Uses the same syntax as find_pattern.",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"algorithm": map[string]any{
+				"type":        "string",
+				"enum":        []string{"cha", "rta", "vta"},
+				"description": "Call graph algorithm. 'cha' (default): fast, works on libraries. 'rta': more precise, needs main. 'vta': most precise, slowest.",
+			},
+		},
+		Required: []string{"function_pattern"},
+	},
+}
+
 // allTools returns all tools the MCP server exposes.
 func allTools() []mcpsdk.Tool {
 	return []mcpsdk.Tool{
@@ -575,5 +783,13 @@ func allTools() []mcpsdk.Tool {
 		// Inspection.
 		explainMatchTool,
 		listEquivalencesTool,
+
+		// Advanced analysis (Phase 4).
+		findGoroutineLeakTool,
+		findSQLInjectionTool,
+		findRaceConditionTool,
+		findContextMisuseTool,
+		findTaintFlowTool,
+		findCallSitesTool,
 	}
 }

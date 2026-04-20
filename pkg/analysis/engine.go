@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -20,9 +21,12 @@ import (
 // Engine is the core analysis engine. It loads Go packages with full
 // type information and provides access to ASTs, type checker, and SSA.
 type Engine struct {
-	fset *token.FileSet
-	pkgs []*packages.Package
-	opts EngineOptions
+	fset    *token.FileSet
+	pkgs    []*packages.Package
+	opts    EngineOptions
+	ipcOnce sync.Once
+	ipc     *InterProceduralContext
+	ipcErr  error
 }
 
 // EngineOptions configures analysis behavior.
@@ -59,7 +63,8 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 			packages.NeedFiles |
 			packages.NeedSyntax |
 			packages.NeedTypes |
-			packages.NeedTypesInfo,
+			packages.NeedTypesInfo |
+			packages.NeedDeps,
 		Dir: dir,
 	}
 
@@ -217,4 +222,21 @@ type FuncContext struct {
 	File *ast.File
 	Func *ast.FuncDecl
 	Info *types.Info
+}
+
+// InterProcedural returns the inter-procedural analysis context, building
+// it lazily on first call. Uses CHA by default. The context is cached for
+// subsequent calls.
+func (e *Engine) InterProcedural() (*InterProceduralContext, error) {
+	return e.InterProceduralWith(AlgoCHA)
+}
+
+// InterProceduralWith returns the inter-procedural context using the
+// specified call graph algorithm. Only the first call builds the context;
+// subsequent calls return the cached result regardless of algorithm.
+func (e *Engine) InterProceduralWith(algo CallGraphAlgorithm) (*InterProceduralContext, error) {
+	e.ipcOnce.Do(func() {
+		e.ipc, e.ipcErr = BuildInterProceduralContext(e, algo)
+	})
+	return e.ipc, e.ipcErr
 }

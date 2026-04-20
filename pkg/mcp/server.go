@@ -25,6 +25,7 @@ import (
 	"github.com/trendvidia/gocaliper/pkg/analysis"
 	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
 	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/gocaliper/pkg/analysis/taint"
 	"github.com/trendvidia/gocaliper/pkg/analysis/templates"
 	"github.com/trendvidia/gocaliper/pkg/iso"
 	"github.com/trendvidia/gocaliper/pkg/transform"
@@ -75,6 +76,14 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(addMissingCleanupTool, s.handleAddMissingCleanup)
 	s.mcp.AddTool(explainMatchTool, s.handleExplainMatch)
 	s.mcp.AddTool(listEquivalencesTool, s.handleListEquivalences)
+
+	// Phase 4: Advanced analysis.
+	s.mcp.AddTool(findGoroutineLeakTool, s.handleFindGoroutineLeak)
+	s.mcp.AddTool(findSQLInjectionTool, s.handleFindSQLInjection)
+	s.mcp.AddTool(findRaceConditionTool, s.handleFindRaceCondition)
+	s.mcp.AddTool(findContextMisuseTool, s.handleFindContextMisuse)
+	s.mcp.AddTool(findTaintFlowTool, s.handleFindTaintFlow)
+	s.mcp.AddTool(findCallSitesTool, s.handleFindCallSites)
 }
 
 // getEngine returns a cached engine for the given path, creating one on cache miss.
@@ -553,6 +562,22 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 					})
 				}
 			}
+
+		case "invariant":
+			// Check that from_pattern (safety predicate) holds at every block.
+			violations := cfg.Invariant(g, g.Entry, fromPred)
+			for _, v := range violations {
+				findings = append(findings, templates.Finding{
+					Kind:     "path_property",
+					Severity: "warning",
+					Message: fmt.Sprintf(
+						"invariant '%s' violated in %s",
+						fromPattern, fc.Func.Name.Name,
+					),
+					Location: engine.LocationOf(fc.Func.Pos()),
+					Path:     v.Path,
+				})
+			}
 		}
 	}
 
@@ -777,6 +802,224 @@ func (s *Server) handleListEquivalences(ctx context.Context, req mcpsdk.CallTool
 		"total":    len(result),
 		"equivalences": result,
 	}), nil
+}
+
+// --------------------------------------------------------------------------
+// Phase 4: Advanced analysis handlers
+// --------------------------------------------------------------------------
+
+func (s *Server) handleFindGoroutineLeak(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	path := stringParam(req, "path")
+	if path == "" {
+		path = "."
+	}
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	tmpl := &templates.GoroutineLeak{}
+	findings := templates.RunTemplate(engine, tmpl)
+	return jsonResult(map[string]any{
+		"total_findings": len(findings),
+		"findings":       findings,
+	}), nil
+}
+
+func (s *Server) handleFindSQLInjection(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	path := stringParam(req, "path")
+	if path == "" {
+		path = "."
+	}
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	tmpl := &templates.SQLInjection{}
+	findings := templates.RunTemplate(engine, tmpl)
+	return jsonResult(map[string]any{
+		"total_findings": len(findings),
+		"findings":       findings,
+	}), nil
+}
+
+func (s *Server) handleFindRaceCondition(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	path := stringParam(req, "path")
+	if path == "" {
+		path = "."
+	}
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	tmpl := &templates.RaceCondition{}
+	findings := templates.RunTemplate(engine, tmpl)
+	return jsonResult(map[string]any{
+		"total_findings": len(findings),
+		"findings":       findings,
+	}), nil
+}
+
+func (s *Server) handleFindContextMisuse(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	path := stringParam(req, "path")
+	if path == "" {
+		path = "."
+	}
+
+	flagTodo := boolParamDefault(req, "flag_todo", true)
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	tmpl := &templates.ContextMisuse{FlagTodo: flagTodo}
+	findings := templates.RunTemplate(engine, tmpl)
+	return jsonResult(map[string]any{
+		"total_findings": len(findings),
+		"findings":       findings,
+	}), nil
+}
+
+func (s *Server) handleFindTaintFlow(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	sourceType := stringParam(req, "source_type")
+	sinkFunction := stringParam(req, "sink_function")
+	path := stringParam(req, "path")
+	if path == "" {
+		path = "."
+	}
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	ipc, err := engine.InterProcedural()
+	if err != nil {
+		return errorResult("Failed to build call graph: %v", err), nil
+	}
+
+	// Parse source type: "*net/http.Request" → package="net/http", type="Request"
+	sourcePkg, sourceTypeName := parseQualifiedType(sourceType)
+
+	// Parse sink function: "database/sql.Query" → package="database/sql", function="Query"
+	sinkPkg, sinkFuncName := parseQualifiedName(sinkFunction)
+
+	config := taint.TaintConfig{
+		Sources: []taint.Source{{
+			Package: sourcePkg,
+			Type:    sourceTypeName,
+		}},
+		Sinks: []taint.Sink{{
+			Package:  sinkPkg,
+			Function: sinkFuncName,
+			ArgIndex: -1, // any argument
+		}},
+	}
+
+	tracker := taint.NewTracker(engine, ipc, config)
+	flows := tracker.Analyze()
+
+	var results []map[string]any
+	for _, flow := range flows {
+		if flow.Sanitized {
+			continue
+		}
+		result := map[string]any{
+			"source": flow.Source,
+			"sink":   flow.Sink,
+		}
+		if len(flow.Path) > 0 {
+			var steps []map[string]any
+			for _, step := range flow.Path {
+				steps = append(steps, map[string]any{
+					"location":    step.Location,
+					"kind":        step.Kind,
+					"description": step.Description,
+				})
+			}
+			result["path"] = steps
+		}
+		results = append(results, result)
+	}
+
+	return jsonResult(map[string]any{
+		"source_type":   sourceType,
+		"sink_function": sinkFunction,
+		"total_flows":   len(results),
+		"flows":         results,
+	}), nil
+}
+
+func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	functionPattern := stringParam(req, "function_pattern")
+	path := stringParam(req, "path")
+	algoStr := stringParam(req, "algorithm")
+	if path == "" {
+		path = "."
+	}
+
+	pat, err := patterns.Compile(functionPattern)
+	if err != nil {
+		return errorResult("Invalid function_pattern: %v", err), nil
+	}
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	algo := analysis.AlgoCHA
+	switch algoStr {
+	case "rta":
+		algo = analysis.AlgoRTA
+	case "vta":
+		algo = analysis.AlgoVTA
+	}
+
+	ipc, err := engine.InterProceduralWith(algo)
+	if err != nil {
+		return errorResult("Failed to build call graph: %v", err), nil
+	}
+
+	matches := patterns.FindCallSitesByPattern(engine, ipc, pat)
+
+	var results []map[string]any
+	for _, m := range matches {
+		results = append(results, map[string]any{
+			"file": m.File,
+			"line": m.Line,
+		})
+	}
+
+	return jsonResult(map[string]any{
+		"function_pattern": functionPattern,
+		"algorithm":        algoStr,
+		"total_call_sites": len(results),
+		"call_sites":       results,
+	}), nil
+}
+
+// parseQualifiedType splits "*net/http.Request" into ("net/http", "Request").
+func parseQualifiedType(s string) (string, string) {
+	s = strings.TrimPrefix(s, "*")
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return "", s
+}
+
+// parseQualifiedName splits "database/sql.Query" into ("database/sql", "Query").
+func parseQualifiedName(s string) (string, string) {
+	if idx := strings.LastIndex(s, "."); idx >= 0 {
+		return s[:idx], s[idx+1:]
+	}
+	return "", s
 }
 
 // --------------------------------------------------------------------------

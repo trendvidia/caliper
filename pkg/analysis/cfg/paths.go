@@ -26,6 +26,10 @@ const (
 	// AnyPath requires the property on at least one path.
 	// Equivalent to CTL's EF (possibly).
 	AnyPath
+
+	// Globally requires the property at every block on every path.
+	// Equivalent to CTL's AG (invariant).
+	Globally
 )
 
 // NodePredicate tests whether a CFG block contains a node satisfying some condition.
@@ -62,6 +66,8 @@ func Reachable(g *Graph, start *Block, pred NodePredicate, q Quantifier) []PathR
 		return reachableAll(g, start, pred)
 	case AnyPath:
 		return reachableAny(g, start, pred)
+	case Globally:
+		return Invariant(g, start, pred)
 	default:
 		return nil
 	}
@@ -462,4 +468,210 @@ func blockMatches(block *Block, pred NodePredicate) bool {
 		}
 	}
 	return false
+}
+
+// --------------------------------------------------------------------------
+// AG invariant and subgraph extraction
+// --------------------------------------------------------------------------
+
+// Invariant checks that a safety predicate holds at EVERY block on EVERY
+// path from start to exit. The predicate is a safety check: it must return
+// true for every node that is "safe". If any node in a block causes the
+// predicate to return false, that block is a violation.
+//
+// Unlike reachableAll (which checks eventuality — pred satisfied before exit),
+// Invariant checks a global property — pred must never be violated at any
+// block on any path.
+//
+// Example: to check "no blocking call between lock and unlock", use a
+// predicate that returns true for all nodes EXCEPT blocking calls.
+func Invariant(g *Graph, start *Block, pred NodePredicate) []PathResult {
+	var violations []PathResult
+
+	type state struct {
+		block *Block
+		path  []int
+	}
+
+	visited := make(map[int]bool)
+	queue := []state{{block: start, path: []int{start.ID}}}
+
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+
+		if visited[cur.block.ID] {
+			continue
+		}
+		visited[cur.block.ID] = true
+
+		// Check invariant: does any node in this block VIOLATE the predicate?
+		if violationNode := blockViolation(cur.block, pred); violationNode != nil {
+			violations = append(violations, PathResult{
+				Path:          cur.path,
+				Satisfied:     false,
+				RelevantNode:  violationNode,
+				RelevantBlock: cur.block,
+			})
+			continue // Don't traverse past a violation.
+		}
+
+		for _, succ := range cur.block.Succs {
+			if pathContains(cur.path, succ.ID) {
+				continue
+			}
+			if len(cur.path) >= maxPathLen {
+				continue
+			}
+			queue = append(queue, state{
+				block: succ,
+				path:  append(append([]int{}, cur.path...), succ.ID),
+			})
+		}
+	}
+
+	return violations
+}
+
+// blockViolation returns the first node in a block where the predicate
+// returns false, or nil if all nodes satisfy the predicate.
+func blockViolation(block *Block, pred NodePredicate) ast.Node {
+	for _, n := range block.Nodes {
+		var violation ast.Node
+		ast.Inspect(n, func(child ast.Node) bool {
+			if child == nil || violation != nil {
+				return false
+			}
+			if !pred(block, child) {
+				violation = child
+				return false
+			}
+			return true
+		})
+		if violation != nil {
+			return violation
+		}
+	}
+	return nil
+}
+
+// SubgraphBetween extracts the CFG portion between blocks matching from and
+// blocks matching to. Returns a new Graph where:
+//   - Entry is a synthetic entry block connected to all from-matching blocks
+//   - Exit is a synthetic exit block connected from all to-matching blocks
+//   - Only blocks reachable from from-blocks that can also reach to-blocks
+//     are included
+//   - Block objects are shared (not cloned) — this is a view over the original
+func SubgraphBetween(g *Graph, from, to NodePredicate) *Graph {
+	// Step 1: Find all blocks matching from and to.
+	var fromBlocks, toBlocks []*Block
+	for _, blk := range g.Blocks {
+		if blockMatches(blk, from) {
+			fromBlocks = append(fromBlocks, blk)
+		}
+		if blockMatches(blk, to) {
+			toBlocks = append(toBlocks, blk)
+		}
+	}
+
+	if len(fromBlocks) == 0 || len(toBlocks) == 0 {
+		return nil
+	}
+
+	// Step 2: Forward BFS from fromBlocks to find all reachable blocks.
+	forwardReachable := make(map[int]bool)
+	{
+		queue := make([]*Block, len(fromBlocks))
+		copy(queue, fromBlocks)
+		for _, blk := range fromBlocks {
+			forwardReachable[blk.ID] = true
+		}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, succ := range cur.Succs {
+				if !forwardReachable[succ.ID] {
+					forwardReachable[succ.ID] = true
+					queue = append(queue, succ)
+				}
+			}
+		}
+	}
+
+	// Step 3: Backward BFS from toBlocks to find all blocks that can reach to.
+	backwardReachable := make(map[int]bool)
+	{
+		queue := make([]*Block, len(toBlocks))
+		copy(queue, toBlocks)
+		for _, blk := range toBlocks {
+			backwardReachable[blk.ID] = true
+		}
+		for len(queue) > 0 {
+			cur := queue[0]
+			queue = queue[1:]
+			for _, pred := range cur.Preds {
+				if !backwardReachable[pred.ID] {
+					backwardReachable[pred.ID] = true
+					queue = append(queue, pred)
+				}
+			}
+		}
+	}
+
+	// Step 4: Intersection — blocks reachable from `from` that can reach `to`.
+	subBlocks := make(map[int]*Block)
+	for _, blk := range g.Blocks {
+		if forwardReachable[blk.ID] && backwardReachable[blk.ID] {
+			subBlocks[blk.ID] = blk
+		}
+	}
+
+	if len(subBlocks) == 0 {
+		return nil
+	}
+
+	// Step 5: Create synthetic entry/exit and wire edges.
+	nextID := 0
+	for _, blk := range g.Blocks {
+		if blk.ID >= nextID {
+			nextID = blk.ID + 1
+		}
+	}
+
+	syntheticEntry := &Block{ID: nextID, Kind: BlockEntry}
+	nextID++
+	syntheticExit := &Block{ID: nextID, Kind: BlockExit}
+
+	// Wire synthetic entry to from-blocks that are in the subgraph.
+	for _, blk := range fromBlocks {
+		if _, ok := subBlocks[blk.ID]; ok {
+			syntheticEntry.Succs = append(syntheticEntry.Succs, blk)
+		}
+	}
+
+	// Wire to-blocks to synthetic exit.
+	for _, blk := range toBlocks {
+		if _, ok := subBlocks[blk.ID]; ok {
+			blk.Succs = append(blk.Succs, syntheticExit)
+			syntheticExit.Preds = append(syntheticExit.Preds, blk)
+		}
+	}
+
+	// Collect all blocks for the new graph.
+	var allBlocks []*Block
+	allBlocks = append(allBlocks, syntheticEntry, syntheticExit)
+	for _, blk := range g.Blocks {
+		if _, ok := subBlocks[blk.ID]; ok {
+			allBlocks = append(allBlocks, blk)
+		}
+	}
+
+	return &Graph{
+		Entry:  syntheticEntry,
+		Exit:   syntheticExit,
+		Blocks: allBlocks,
+		Func:   g.Func,
+		Info:   g.Info,
+		Fset:   g.Fset,
+	}
 }

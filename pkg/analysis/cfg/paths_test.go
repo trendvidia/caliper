@@ -295,3 +295,187 @@ func TestDominates_NeitherExists(t *testing.T) {
 		t.Error("should return false when neither predicate matches")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Invariant tests
+// --------------------------------------------------------------------------
+
+func TestInvariant_AllBlocksSatisfy(t *testing.T) {
+	// No dangerous() call anywhere — safety predicate "no dangerous()" holds globally.
+	src := `package p; func f() {
+		work()
+		if true {
+			work()
+		} else {
+			work()
+		}
+	}`
+	g := buildGraphForPaths(t, src)
+
+	// Safety predicate: returns true for all safe nodes, false for dangerous ones.
+	noDangerous := func(block *Block, node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			return ident.Name != "dangerous"
+		}
+		return true
+	}
+
+	violations := Invariant(g, g.Entry, noDangerous)
+	if len(violations) != 0 {
+		t.Errorf("expected no violations, got %d", len(violations))
+	}
+}
+
+func TestInvariant_SomeBlockFails(t *testing.T) {
+	// dangerous() violates the safety predicate "no dangerous calls".
+	src := `package p; func f() {
+		work()
+		if true {
+			dangerous()
+		} else {
+			work()
+		}
+	}`
+	g := buildGraphForPaths(t, src)
+
+	// Safety predicate: returns false when a dangerous() call is found.
+	noDangerous := func(block *Block, node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			return ident.Name != "dangerous"
+		}
+		return true
+	}
+
+	violations := Invariant(g, g.Entry, noDangerous)
+	if len(violations) == 0 {
+		t.Error("expected violations: dangerous() block violates the safety predicate")
+	}
+}
+
+func TestInvariant_ViaReachable(t *testing.T) {
+	// Invariant should be callable through Reachable with Globally quantifier.
+	src := `package p; func f() {
+		work()
+		if true {
+			dangerous()
+		} else {
+			work()
+		}
+	}`
+	g := buildGraphForPaths(t, src)
+
+	// Safety predicate: returns false when a dangerous() call is found.
+	noDangerous := func(block *Block, node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			return ident.Name != "dangerous"
+		}
+		return true
+	}
+
+	violations := Reachable(g, g.Entry, noDangerous, Globally)
+	if len(violations) == 0 {
+		t.Error("expected violations via Reachable with Globally quantifier")
+	}
+}
+
+func TestInvariant_EmptyFunction(t *testing.T) {
+	// Empty function — no blocks with nodes, so no violations.
+	src := `package p; func f() {}`
+	g := buildGraphForPaths(t, src)
+	violations := Invariant(g, g.Entry, predCallTo("work"))
+	if len(violations) != 0 {
+		t.Errorf("expected no violations for empty function, got %d", len(violations))
+	}
+}
+
+// --------------------------------------------------------------------------
+// SubgraphBetween tests
+// --------------------------------------------------------------------------
+
+func TestSubgraphBetween_Basic(t *testing.T) {
+	src := `package p; func f() {
+		lock()
+		if true {
+			blocking()
+		}
+		unlock()
+	}`
+	g := buildGraphForPaths(t, src)
+	sub := SubgraphBetween(g, predCallTo("lock"), predCallTo("unlock"))
+	// sub should have entry, exit, and blocks between lock and unlock.
+	if sub == nil {
+		t.Fatal("SubgraphBetween returned nil")
+	}
+	if len(sub.Blocks) < 3 { // at least entry, exit, and one block
+		t.Errorf("expected at least 3 blocks in subgraph, got %d", len(sub.Blocks))
+	}
+}
+
+func TestSubgraphBetween_NoFromMatch(t *testing.T) {
+	src := `package p; func f() {
+		work()
+		unlock()
+	}`
+	g := buildGraphForPaths(t, src)
+	sub := SubgraphBetween(g, predCallTo("lock"), predCallTo("unlock"))
+	if sub != nil {
+		t.Error("expected nil when from predicate has no matches")
+	}
+}
+
+func TestSubgraphBetween_NoToMatch(t *testing.T) {
+	src := `package p; func f() {
+		lock()
+		work()
+	}`
+	g := buildGraphForPaths(t, src)
+	sub := SubgraphBetween(g, predCallTo("lock"), predCallTo("missing"))
+	if sub != nil {
+		t.Error("expected nil when to predicate has no matches")
+	}
+}
+
+func TestSubgraphBetween_ComposedWithInvariant(t *testing.T) {
+	// Compose: extract lock->unlock subgraph, then check no blocking() in it.
+	src := `package p; func f() {
+		lock()
+		if true {
+			blocking()
+		}
+		unlock()
+	}`
+	g := buildGraphForPaths(t, src)
+	sub := SubgraphBetween(g, predCallTo("lock"), predCallTo("unlock"))
+	if sub == nil {
+		t.Fatal("SubgraphBetween returned nil")
+	}
+
+	// Create predicate that is satisfied when there's NO blocking call.
+	noBlocking := func(block *Block, node ast.Node) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true // non-call nodes are fine
+		}
+		if ident, ok := call.Fun.(*ast.Ident); ok {
+			return ident.Name != "blocking"
+		}
+		return true
+	}
+
+	violations := Invariant(sub, sub.Entry, noBlocking)
+	if len(violations) == 0 {
+		t.Error("expected violations: blocking() appears in lock->unlock subgraph")
+	}
+}

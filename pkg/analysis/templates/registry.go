@@ -41,8 +41,9 @@ type TemplateContext struct {
 	Engine  *analysis.Engine
 	Func    *analysis.FuncContext
 	CFG     *cfg.Graph
-	Pattern *patterns.Pattern // optional, depends on the template
+	Pattern *patterns.Pattern                // optional, depends on the template
 	Fset    *token.FileSet
+	IPC     *analysis.InterProceduralContext // optional, nil for intra-procedural
 }
 
 // BuildContext creates a TemplateContext for a function.

@@ -34,48 +34,57 @@ func BuildSSA(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, pkg *pack
 		return buildFallback(fset, fn, info)
 	}
 
-	// Find the SSA function matching the AST function declaration.
-	var ssaFn *ssa.Function
-	if fn.Recv == nil {
-		ssaFn = ssaPkg.Func(fn.Name.Name)
-	} else {
-		// Method — search through all members.
-		for _, member := range ssaPkg.Members {
-			if typ, ok := member.(*ssa.Type); ok {
-				// Check named type's method set.
-				named := typ.Type()
-				mset := prog.MethodSets.MethodSet(named)
-				for i := 0; i < mset.Len(); i++ {
-					sel := mset.At(i)
-					if sel.Obj().Name() == fn.Name.Name {
-						ssaFn = prog.MethodValue(sel)
-						break
-					}
-				}
-				if ssaFn != nil {
-					break
-				}
-				// Check pointer receiver method set.
-				mset = prog.MethodSets.MethodSet(types.NewPointer(named))
-				for i := 0; i < mset.Len(); i++ {
-					sel := mset.At(i)
-					if sel.Obj().Name() == fn.Name.Name {
-						ssaFn = prog.MethodValue(sel)
-						break
-					}
-				}
-				if ssaFn != nil {
-					break
-				}
-			}
-		}
-	}
+	return BuildSSAFromProgram(fset, fn, info, prog, ssaPkg)
+}
 
+// BuildSSAFromProgram constructs a CFG from an existing SSA program and
+// package. This avoids rebuilding the SSA program when an
+// InterProceduralContext already holds one.
+func BuildSSAFromProgram(fset *token.FileSet, fn *ast.FuncDecl, info *types.Info, prog *ssa.Program, ssaPkg *ssa.Package) *Graph {
+	// Find the SSA function matching the AST function declaration.
+	ssaFn := findSSAFunction(prog, ssaPkg, fn)
 	if ssaFn == nil || len(ssaFn.Blocks) == 0 {
 		return buildFallback(fset, fn, info)
 	}
 
 	return convertSSAToGraph(fset, fn, info, ssaFn)
+}
+
+// findSSAFunction locates the SSA function corresponding to an AST
+// function declaration within a package.
+func findSSAFunction(prog *ssa.Program, ssaPkg *ssa.Package, fn *ast.FuncDecl) *ssa.Function {
+	if fn.Recv == nil {
+		return ssaPkg.Func(fn.Name.Name)
+	}
+
+	// Method — search through all members.
+	for _, member := range ssaPkg.Members {
+		typ, ok := member.(*ssa.Type)
+		if !ok {
+			continue
+		}
+
+		named := typ.Type()
+
+		// Check named type's method set.
+		mset := prog.MethodSets.MethodSet(named)
+		for i := 0; i < mset.Len(); i++ {
+			sel := mset.At(i)
+			if sel.Obj().Name() == fn.Name.Name {
+				return prog.MethodValue(sel)
+			}
+		}
+
+		// Check pointer receiver method set.
+		mset = prog.MethodSets.MethodSet(types.NewPointer(named))
+		for i := 0; i < mset.Len(); i++ {
+			sel := mset.At(i)
+			if sel.Obj().Name() == fn.Name.Name {
+				return prog.MethodValue(sel)
+			}
+		}
+	}
+	return nil
 }
 
 // convertSSAToGraph maps SSA basic blocks to our Graph/Block representation.
