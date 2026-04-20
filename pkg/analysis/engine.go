@@ -10,6 +10,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
+	"strings"
 
 	"golang.org/x/tools/go/packages"
 )
@@ -19,10 +21,34 @@ import (
 type Engine struct {
 	fset *token.FileSet
 	pkgs []*packages.Package
+	opts EngineOptions
+}
+
+// EngineOptions configures analysis behavior.
+type EngineOptions struct {
+	// SkipGenerated skips files with "// Code generated" headers (default: true).
+	SkipGenerated bool
+	// SkipCgo skips files that import "C" (default: true).
+	SkipCgo bool
+	// BuildTags sets build tags for package loading.
+	BuildTags []string
+}
+
+// DefaultOptions returns the default engine options.
+func DefaultOptions() EngineOptions {
+	return EngineOptions{
+		SkipGenerated: true,
+		SkipCgo:       true,
+	}
 }
 
 // NewEngine creates a new analysis engine rooted at the given directory.
 func NewEngine(dir string, patterns ...string) (*Engine, error) {
+	return NewEngineWithOptions(dir, DefaultOptions(), patterns...)
+}
+
+// NewEngineWithOptions creates an engine with explicit options.
+func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*Engine, error) {
 	if len(patterns) == 0 {
 		patterns = []string{"./..."}
 	}
@@ -35,6 +61,11 @@ func NewEngine(dir string, patterns ...string) (*Engine, error) {
 			packages.NeedTypesInfo |
 			packages.NeedDeps,
 		Dir: dir,
+	}
+
+	// Apply build tags.
+	if len(opts.BuildTags) > 0 {
+		cfg.BuildFlags = []string{"-tags=" + strings.Join(opts.BuildTags, ",")}
 	}
 
 	pkgs, err := packages.Load(cfg, patterns...)
@@ -53,9 +84,14 @@ func NewEngine(dir string, patterns ...string) (*Engine, error) {
 		return nil, fmt.Errorf("package errors: %v", errs[0])
 	}
 
+	if len(pkgs) == 0 {
+		return nil, fmt.Errorf("no packages found in %s", dir)
+	}
+
 	return &Engine{
 		fset: pkgs[0].Fset,
 		pkgs: pkgs,
+		opts: opts,
 	}, nil
 }
 
@@ -90,6 +126,9 @@ type WalkFunc func(pkg *packages.Package, file *ast.File, node ast.Node, info *t
 func (e *Engine) Walk(fn WalkFunc) {
 	for _, pkg := range e.pkgs {
 		for _, file := range pkg.Syntax {
+			if e.shouldSkipFile(file) {
+				continue
+			}
 			ast.Inspect(file, func(n ast.Node) bool {
 				if n == nil {
 					return false
@@ -105,6 +144,9 @@ func (e *Engine) FuncNodes() []*FuncContext {
 	var funcs []*FuncContext
 	for _, pkg := range e.pkgs {
 		for _, file := range pkg.Syntax {
+			if e.shouldSkipFile(file) {
+				continue
+			}
 			for _, decl := range file.Decls {
 				if fd, ok := decl.(*ast.FuncDecl); ok {
 					funcs = append(funcs, &FuncContext{
@@ -118,6 +160,45 @@ func (e *Engine) FuncNodes() []*FuncContext {
 		}
 	}
 	return funcs
+}
+
+// shouldSkipFile checks if a file should be excluded from analysis
+// based on engine options (generated code, cgo).
+func (e *Engine) shouldSkipFile(file *ast.File) bool {
+	if e.opts.SkipGenerated && isGenerated(file) {
+		return true
+	}
+	if e.opts.SkipCgo && isCgoFile(file) {
+		return true
+	}
+	return false
+}
+
+// isGenerated checks for the standard "Code generated" marker.
+// See https://pkg.go.dev/cmd/go/internal/generate
+func isGenerated(file *ast.File) bool {
+	return ast.IsGenerated(file)
+}
+
+// isCgoFile checks if a file imports "C" (cgo pseudo-package).
+func isCgoFile(file *ast.File) bool {
+	for _, imp := range file.Imports {
+		if imp.Path.Value == `"C"` {
+			return true
+		}
+	}
+	return false
+}
+
+// IsWorkspace checks if the directory contains a go.work file,
+// indicating Go workspace mode.
+func IsWorkspace(dir string) bool {
+	return fileExists(dir + "/go.work")
+}
+
+func fileExists(path string) bool {
+	_, err := os.Stat(path)
+	return err == nil
 }
 
 // FuncContext bundles a function declaration with its surrounding context.

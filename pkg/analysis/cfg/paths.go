@@ -131,11 +131,22 @@ func NeverBetween(g *Graph, from, to, excluded NodePredicate) []PathResult {
 				var taintNode ast.Node = cur.node
 
 				// Check if successor contains excluded pattern.
+				// Use ast.Inspect to walk into child nodes, matching
+				// the same behavior as blockMatches.
 				if !tainted {
 					for _, n := range succ.Nodes {
-						if excluded(succ, n) {
-							tainted = true
-							taintNode = n
+						ast.Inspect(n, func(child ast.Node) bool {
+							if child == nil || tainted {
+								return false
+							}
+							if excluded(succ, child) {
+								tainted = true
+								taintNode = child
+								return false
+							}
+							return true
+						})
+						if tainted {
 							break
 						}
 					}

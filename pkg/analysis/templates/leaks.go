@@ -92,13 +92,18 @@ func (rl *ResourceLeak) Analyze(ctx *TemplateContext) []Finding {
 
 func (rl *ResourceLeak) buildReleasePredicate(resourceVar string) cfg.NodePredicate {
 	return func(_ *cfg.Block, node ast.Node) bool {
-		// Look for $resource.Release() call.
-		call, ok := node.(*ast.ExprStmt)
-		if !ok {
-			return false
-		}
-		callExpr, ok := call.X.(*ast.CallExpr)
-		if !ok {
+		// Look for $resource.Release() call — either direct or deferred.
+		var callExpr *ast.CallExpr
+		switch n := node.(type) {
+		case *ast.ExprStmt:
+			c, ok := n.X.(*ast.CallExpr)
+			if !ok {
+				return false
+			}
+			callExpr = c
+		case *ast.DeferStmt:
+			callExpr = n.Call
+		default:
 			return false
 		}
 		sel, ok := callExpr.Fun.(*ast.SelectorExpr)

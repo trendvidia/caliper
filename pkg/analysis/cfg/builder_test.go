@@ -358,3 +358,162 @@ func TestCFG_SimpleReturn(t *testing.T) {
 		t.Fatalf("expected at least 3 blocks, got %d", len(g.Blocks))
 	}
 }
+
+func TestCFG_IfElse(t *testing.T) {
+	src := `package p; func f() {
+		if true {
+			a()
+		} else {
+			b()
+		}
+		c()
+	}`
+	g := buildCFG(t, src)
+
+	// Should have: entry → branch → then|else → join → exit
+	var branchBlocks []*Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			branchBlocks = append(branchBlocks, b)
+		}
+	}
+	if len(branchBlocks) == 0 {
+		t.Fatal("expected at least one branch block for if/else")
+	}
+	// Branch should have 2 successors (then and else).
+	if len(branchBlocks[0].Succs) != 2 {
+		t.Errorf("branch block should have 2 successors, got %d", len(branchBlocks[0].Succs))
+	}
+}
+
+func TestCFG_Switch(t *testing.T) {
+	src := `package p; func f() {
+		switch x := 1; x {
+		case 1:
+			a()
+		case 2:
+			b()
+		default:
+			c()
+		}
+	}`
+	g := buildCFG(t, src)
+
+	var branchBlocks []*Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			branchBlocks = append(branchBlocks, b)
+		}
+	}
+	if len(branchBlocks) == 0 {
+		t.Fatal("expected branch block for switch")
+	}
+	// Switch head should have successors for each case (3 cases).
+	if len(branchBlocks[0].Succs) < 3 {
+		t.Errorf("switch branch should have at least 3 successors, got %d", len(branchBlocks[0].Succs))
+	}
+}
+
+func TestCFG_Select(t *testing.T) {
+	src := `package p; func f() {
+		ch1 := make(chan int)
+		ch2 := make(chan int)
+		select {
+		case <-ch1:
+			a()
+		case <-ch2:
+			b()
+		}
+	}`
+	g := buildCFG(t, src)
+
+	var branchBlocks []*Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			branchBlocks = append(branchBlocks, b)
+		}
+	}
+	if len(branchBlocks) == 0 {
+		t.Fatal("expected branch block for select")
+	}
+	// Select head should have 2 successors (one per case).
+	if len(branchBlocks[0].Succs) < 2 {
+		t.Errorf("select branch should have at least 2 successors, got %d", len(branchBlocks[0].Succs))
+	}
+}
+
+func TestCFG_TypeSwitch(t *testing.T) {
+	src := `package p; func f() {
+		var x interface{} = 1
+		switch x.(type) {
+		case int:
+			a()
+		case string:
+			b()
+		}
+	}`
+	g := buildCFG(t, src)
+
+	var branchBlocks []*Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			branchBlocks = append(branchBlocks, b)
+		}
+	}
+	if len(branchBlocks) == 0 {
+		t.Fatal("expected branch block for type switch")
+	}
+}
+
+func TestCFG_ForWithPost(t *testing.T) {
+	src := `package p; func f() {
+		for i := 0; i < 10; i++ {
+			work()
+		}
+	}`
+	g := buildCFG(t, src)
+
+	// Should have a back edge from the post/body to the header.
+	var header *Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			header = b
+			break
+		}
+	}
+	if header == nil {
+		t.Fatal("expected branch block for for-loop header")
+	}
+	// Header should have >= 1 predecessor that is not the entry block
+	// (the back edge from post).
+	hasBackEdge := false
+	for _, pred := range header.Preds {
+		if pred != g.Entry {
+			hasBackEdge = true
+		}
+	}
+	if !hasBackEdge {
+		t.Error("for loop header should have back edge from body/post")
+	}
+}
+
+func TestCFG_NestedIf(t *testing.T) {
+	src := `package p; func f() {
+		if true {
+			if false {
+				a()
+			}
+		}
+	}`
+	g := buildCFG(t, src)
+
+	var branchBlocks []*Block
+	for _, b := range g.Blocks {
+		if b.Kind == BlockBranch {
+			branchBlocks = append(branchBlocks, b)
+		}
+	}
+	if len(branchBlocks) < 2 {
+		t.Errorf("expected at least 2 branch blocks for nested if, got %d", len(branchBlocks))
+	}
+}

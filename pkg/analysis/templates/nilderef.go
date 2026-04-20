@@ -169,14 +169,20 @@ func findBlockContaining(g *cfg.Graph, target ast.Node) *cfg.Block {
 	return nil
 }
 
-// condReferencesVar checks if a node is a condition (if statement) that
-// references the given variable name.
+// condReferencesVar checks if a node is a condition that references the
+// given variable name. Handles full IfStmt nodes, bare binary expressions,
+// and unary expressions (the CFG branch blocks store only the condition
+// expression, not the full IfStmt).
 func condReferencesVar(node ast.Node, varName string) bool {
-	ifStmt, ok := node.(*ast.IfStmt)
-	if !ok {
-		return false
+	switch n := node.(type) {
+	case *ast.IfStmt:
+		return exprReferencesIdent(n.Cond, varName)
+	case *ast.BinaryExpr:
+		return exprReferencesIdent(n, varName)
+	case *ast.UnaryExpr:
+		return exprReferencesIdent(n, varName)
 	}
-	return exprReferencesIdent(ifStmt.Cond, varName)
+	return false
 }
 
 func exprReferencesIdent(expr ast.Expr, name string) bool {

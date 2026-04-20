@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/imports"
 
 	"github.com/trendvidia/gocaliper/pkg/analysis"
@@ -81,7 +82,7 @@ func (rw *Rewriter) run(preview bool) (*Result, error) {
 	for _, pkg := range rw.engine.Packages() {
 		for _, file := range pkg.Syntax {
 			filename := rw.engine.Fset().Position(file.Pos()).Filename
-			changes := rw.transformFile(file, pkg.TypesInfo, filename)
+			changes := rw.transformFile(file, pkg.TypesInfo, filename, !preview)
 
 			if len(changes) > 0 {
 				filesAffected[filename] = true
@@ -104,12 +105,13 @@ func (rw *Rewriter) run(preview bool) (*Result, error) {
 	return result, nil
 }
 
-func (rw *Rewriter) transformFile(file *ast.File, info *types.Info, filename string) []Change {
+func (rw *Rewriter) transformFile(file *ast.File, info *types.Info, filename string, apply bool) []Change {
 	var changes []Change
 
-	ast.Inspect(file, func(n ast.Node) bool {
+	astutil.Apply(file, func(c *astutil.Cursor) bool {
+		n := c.Node()
 		if n == nil {
-			return false
+			return true
 		}
 
 		bindings := rw.match.MatchNode(n, info)
@@ -136,8 +138,13 @@ func (rw *Rewriter) transformFile(file *ast.File, info *types.Info, filename str
 			After:  after,
 		})
 
-		return true
-	})
+		// Replace the node in the AST when applying.
+		if apply {
+			c.Replace(replacement)
+		}
+
+		return false // don't recurse into matched/replaced node
+	}, nil)
 
 	return changes
 }

@@ -40,19 +40,19 @@
 ## Phase 3 — Robustness & Testing
 
 ### Test Suite
-- [ ] Unit tests for pattern matcher — cover all node types, metavariable binding, variadic args
-- [ ] Unit tests for CFG builder — verify graph structure for if/for/switch/select/defer
-- [ ] Unit tests for path analysis — AllPaths vs AnyPath, NeverBetween, AlwaysBefore, Dominates
-- [ ] Integration tests for each template (resource leaks, unchecked errors, lock violations) with real Go source fixtures
-- [ ] End-to-end MCP tests — send tool requests over stdio, verify JSON responses
-- [ ] Golden file tests for transformations — input Go file → expected output Go file
+- [x] Unit tests for pattern matcher — cover all node types, metavariable binding, variadic args
+- [x] Unit tests for CFG builder — verify graph structure for if/for/switch/select/defer
+- [x] Unit tests for path analysis — AllPaths vs AnyPath, NeverBetween, AlwaysBefore, Dominates
+- [x] Integration tests for each template (resource leaks, unchecked errors, lock violations) with real Go source fixtures
+- [x] End-to-end MCP tests — send tool requests over stdio, verify JSON responses
+- [x] Golden file tests for transformations — input Go file → expected output Go file
 
 ### Edge Cases
-- [ ] Handle generated code (`// Code generated` header) — skip by default
-- [ ] Handle build tags and platform-specific files
-- [ ] Handle cgo files gracefully (skip or partial analysis)
+- [x] Handle generated code (`// Code generated` header) — skip by default
+- [x] Handle build tags and platform-specific files
+- [x] Handle cgo files gracefully (skip or partial analysis)
 - [ ] Large codebase performance — lazy package loading, incremental analysis
-- [ ] Multiple modules / workspace mode (`go.work`)
+- [x] Multiple modules / workspace mode (`go.work`)
 
 ## Phase 4 — Advanced Analysis
 

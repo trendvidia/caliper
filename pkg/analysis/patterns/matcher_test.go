@@ -488,6 +488,172 @@ func TestMultiStatement_ConsistentBindingAcrossStmts(t *testing.T) {
 	}
 }
 
+func TestMatchNode_BinaryExpr(t *testing.T) {
+	pat, err := Compile("$a + $b")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.BinaryExpr{
+		X: &ast.Ident{Name: "x"}, Op: token.ADD, Y: &ast.Ident{Name: "y"},
+	}
+	b := pat.MatchNode(node, nil)
+	if b == nil {
+		t.Fatal("expected match for x + y")
+	}
+	if (*b)["a"].Node.(*ast.Ident).Name != "x" {
+		t.Error("expected a bound to x")
+	}
+	if (*b)["b"].Node.(*ast.Ident).Name != "y" {
+		t.Error("expected b bound to y")
+	}
+}
+
+func TestMatchNode_BinaryExpr_WrongOp(t *testing.T) {
+	pat, err := Compile("$a + $b")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.BinaryExpr{
+		X: &ast.Ident{Name: "x"}, Op: token.MUL, Y: &ast.Ident{Name: "y"},
+	}
+	if b := pat.MatchNode(node, nil); b != nil {
+		t.Error("expected no match for multiplication with addition pattern")
+	}
+}
+
+func TestMatchNode_AssignStmt(t *testing.T) {
+	pat, err := Compile("$x := $y")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	src := `package p; func f() { a := b }`
+	file, parseErr := parser.ParseFile(fset, "", src, 0)
+	if parseErr != nil {
+		t.Fatalf("parse: %v", parseErr)
+	}
+
+	var matched bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		if pat.MatchNode(n, nil) != nil {
+			matched = true
+			return false
+		}
+		return true
+	})
+	if !matched {
+		t.Error("expected match for $x := $y against a := b")
+	}
+}
+
+func TestMatchNode_ReturnStmt(t *testing.T) {
+	pat, err := Compile("return $x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	src := `package p; func f() int { return 42 }`
+	file, parseErr := parser.ParseFile(fset, "", src, 0)
+	if parseErr != nil {
+		t.Fatalf("parse: %v", parseErr)
+	}
+
+	var matched bool
+	ast.Inspect(file, func(n ast.Node) bool {
+		if n == nil {
+			return false
+		}
+		if pat.MatchNode(n, nil) != nil {
+			matched = true
+			return false
+		}
+		return true
+	})
+	if !matched {
+		t.Error("expected match for return $x against return 42")
+	}
+}
+
+func TestMatchNode_IndexExpr(t *testing.T) {
+	pat, err := Compile("$x[$i]")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.IndexExpr{
+		X:     &ast.Ident{Name: "arr"},
+		Index: &ast.Ident{Name: "idx"},
+	}
+	b := pat.MatchNode(node, nil)
+	if b == nil {
+		t.Fatal("expected match for arr[idx]")
+	}
+	if (*b)["x"].Node.(*ast.Ident).Name != "arr" {
+		t.Error("expected x bound to arr")
+	}
+	if (*b)["i"].Node.(*ast.Ident).Name != "idx" {
+		t.Error("expected i bound to idx")
+	}
+}
+
+func TestMatchNode_StarExpr(t *testing.T) {
+	pat, err := Compile("*$x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.StarExpr{X: &ast.Ident{Name: "ptr"}}
+	b := pat.MatchNode(node, nil)
+	if b == nil {
+		t.Fatal("expected match for *ptr")
+	}
+	if (*b)["x"].Node.(*ast.Ident).Name != "ptr" {
+		t.Error("expected x bound to ptr")
+	}
+}
+
+func TestMatchNode_VariadicWithPrefix(t *testing.T) {
+	// foo(ctx, $args...) should match foo(ctx, a, b)
+	pat, err := Compile("foo(ctx, $args...)")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.CallExpr{
+		Fun: &ast.Ident{Name: "foo"},
+		Args: []ast.Expr{
+			&ast.Ident{Name: "ctx"},
+			&ast.Ident{Name: "a"},
+			&ast.Ident{Name: "b"},
+		},
+	}
+	if b := pat.MatchNode(node, nil); b == nil {
+		t.Error("expected match for foo(ctx, a, b) with variadic after ctx")
+	}
+}
+
+func TestMatchNode_VariadicNoPrefix(t *testing.T) {
+	// bar($args...) should match bar() with no args
+	pat, err := Compile("bar($args...)")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+
+	node := &ast.CallExpr{
+		Fun: &ast.Ident{Name: "bar"},
+	}
+	if b := pat.MatchNode(node, nil); b == nil {
+		t.Error("expected match for bar() with variadic pattern")
+	}
+}
+
 func TestStmtWildcard_EmptyBody(t *testing.T) {
 	// Pattern: if $cond { ... }
 	// Should match even an empty body (... matches zero statements).
