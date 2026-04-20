@@ -88,7 +88,7 @@
 - [ ] Regex constraints on metavariables — `$x where name matches /^test.*/`
 
 ### Distribution
-- [ ] Homebrew formula
+- [x] Homebrew formula
 - [ ] Docker image for CI usage
-- [ ] Claude Code MCP config snippet (`claude_desktop_config.json` example)
+- [x] Claude Code MCP config snippet (`claude_desktop_config.json` example)
 - [ ] VS Code extension that runs GoCaliper as an MCP server
