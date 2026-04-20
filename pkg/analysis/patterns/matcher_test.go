@@ -684,3 +684,137 @@ func TestStmtWildcard_EmptyBody(t *testing.T) {
 		t.Error("expected match for if with empty body and ... wildcard")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Name constraint tests
+// --------------------------------------------------------------------------
+
+func TestNameConstraint_MatchingIdent(t *testing.T) {
+	pat, err := Compile("$x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	pat, err = pat.WithNameConstraints(NameConstraint{"x": "^test"})
+	if err != nil {
+		t.Fatalf("name constraint: %v", err)
+	}
+
+	// testFoo matches ^test
+	node := &ast.Ident{Name: "testFoo"}
+	if b := pat.MatchNode(node, nil); b == nil {
+		t.Error("expected match for testFoo with ^test constraint")
+	}
+
+	// prodBar does not match ^test
+	node2 := &ast.Ident{Name: "prodBar"}
+	if b := pat.MatchNode(node2, nil); b != nil {
+		t.Error("expected no match for prodBar with ^test constraint")
+	}
+}
+
+func TestNameConstraint_SelectorExpr(t *testing.T) {
+	pat, err := Compile("$x.Close()")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	pat, err = pat.WithNameConstraints(NameConstraint{"x": "^(db|conn)$"})
+	if err != nil {
+		t.Fatalf("name constraint: %v", err)
+	}
+
+	// db.Close() matches
+	match := &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X: &ast.Ident{Name: "db"}, Sel: &ast.Ident{Name: "Close"},
+		},
+	}
+	if b := pat.MatchNode(match, nil); b == nil {
+		t.Error("expected match for db.Close()")
+	}
+
+	// f.Close() does not match
+	noMatch := &ast.CallExpr{
+		Fun: &ast.SelectorExpr{
+			X: &ast.Ident{Name: "f"}, Sel: &ast.Ident{Name: "Close"},
+		},
+	}
+	if b := pat.MatchNode(noMatch, nil); b != nil {
+		t.Error("expected no match for f.Close() with ^(db|conn)$ constraint")
+	}
+}
+
+func TestNameConstraint_UnboundMetavar(t *testing.T) {
+	// Constraint on a metavar that doesn't appear in the pattern.
+	pat, err := Compile("$x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	pat, err = pat.WithNameConstraints(NameConstraint{"y": "^foo"})
+	if err != nil {
+		t.Fatalf("name constraint: %v", err)
+	}
+
+	// $y is never bound, so constraint fails.
+	node := &ast.Ident{Name: "anything"}
+	if b := pat.MatchNode(node, nil); b != nil {
+		t.Error("expected no match when constrained metavar is unbound")
+	}
+}
+
+func TestNameConstraint_NonIdentBinding(t *testing.T) {
+	// $x binds to a CallExpr (not an Ident) — name constraint should reject.
+	pat, err := Compile("$x + 1")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	pat, err = pat.WithNameConstraints(NameConstraint{"x": "^foo"})
+	if err != nil {
+		t.Fatalf("name constraint: %v", err)
+	}
+
+	node := &ast.BinaryExpr{
+		X:  &ast.CallExpr{Fun: &ast.Ident{Name: "foo"}},
+		Op: token.ADD,
+		Y:  &ast.BasicLit{Kind: token.INT, Value: "1"},
+	}
+	if b := pat.MatchNode(node, nil); b != nil {
+		t.Error("expected no match when metavar binds to non-ident")
+	}
+}
+
+func TestNameConstraint_InvalidRegex(t *testing.T) {
+	pat, err := Compile("$x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	_, err = pat.WithNameConstraints(NameConstraint{"x": "[invalid"})
+	if err == nil {
+		t.Error("expected error for invalid regex")
+	}
+}
+
+func TestNameConstraint_CombinedWithTypeConstraint(t *testing.T) {
+	// Both type and name constraints must pass.
+	b := matchExprWithTypes(t, "$x + $x", "x + x", TypeConstraint{"x": "int"})
+	if b == nil {
+		t.Fatal("sanity check: expected match without name constraint")
+	}
+
+	// Now add a name constraint that also passes.
+	pat, err := Compile("$x")
+	if err != nil {
+		t.Fatalf("compile: %v", err)
+	}
+	pat = pat.WithTypeConstraints(TypeConstraint{"x": "int"})
+	pat, err = pat.WithNameConstraints(NameConstraint{"x": "^x$"})
+	if err != nil {
+		t.Fatalf("name constraint: %v", err)
+	}
+
+	node := &ast.Ident{Name: "x"}
+	if b := pat.MatchNode(node, nil); b == nil {
+		// Without type info, type constraint is skipped (info is nil).
+		// Name constraint still applies.
+		t.Error("expected match for x with ^x$ name constraint (no type info)")
+	}
+}

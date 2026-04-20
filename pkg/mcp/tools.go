@@ -57,6 +57,15 @@ or structural idioms across a codebase. For control-flow properties
 				"description": "Map of metavariable name → Go type string. Only matches where the metavariable has the specified type. Example: {\"x\": \"*os.File\", \"err\": \"error\"}",
 				"additionalProperties": map[string]any{"type": "string"},
 			},
+			"name_constraints": map[string]any{
+				"type":        "object",
+				"description": "Map of metavariable name → regex. Only matches where the bound identifier name matches the regex. Example: {\"fn\": \"^Test.*\", \"x\": \"^(db|conn)$\"}",
+				"additionalProperties": map[string]any{"type": "string"},
+			},
+			"negative": map[string]any{
+				"type":        "boolean",
+				"description": "If true, find functions where the pattern does NOT appear. Returns functions lacking the pattern. Default: false.",
+			},
 			"include_equivalences": map[string]any{
 				"type":        "boolean",
 				"description": "If true, also match semantically equivalent forms (e.g., 'x != nil' also matches '!(x == nil)'). Default: true.",
@@ -761,6 +770,42 @@ refactoring, or auditing call patterns.`,
 	},
 }
 
+var runPatternsTool = mcpsdk.Tool{
+	Name: "run_patterns",
+	Description: `Load and run rules from a .gcl pattern file. GCL files define reusable,
+shareable patterns and rules for finding code issues.
+
+A .gcl file contains named patterns (with optional type/name constraints)
+and rules that compose them. Rules can:
+  - Find simple pattern matches
+  - Detect absence of a pattern within a scope (e.g., Open() without Close())
+  - Check that a pattern appears within the same scope as another
+
+GCL files can be specified directly by path or auto-discovered from
+.gocaliper.yaml (patterns: [...]).
+
+USE THIS TOOL WHEN: you want to run pre-defined pattern rules from a .gcl
+file, check a codebase against a reusable rule set, or apply custom
+organization-specific code policies.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"gcl_file": map[string]any{
+				"type":        "string",
+				"description": "Path to a .gcl file. If omitted, runs all .gcl files from .gocaliper.yaml patterns list.",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"rule": map[string]any{
+				"type":        "string",
+				"description": "Run only this specific rule from the .gcl file (by name). If omitted, runs all rules.",
+			},
+		},
+	},
+}
+
 // allTools returns all tools the MCP server exposes.
 func allTools() []mcpsdk.Tool {
 	return []mcpsdk.Tool{
@@ -783,6 +828,9 @@ func allTools() []mcpsdk.Tool {
 		// Inspection.
 		explainMatchTool,
 		listEquivalencesTool,
+
+		// Pattern language (Phase 5).
+		runPatternsTool,
 
 		// Advanced analysis (Phase 4).
 		findGoroutineLeakTool,

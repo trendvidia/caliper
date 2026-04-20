@@ -18,6 +18,7 @@ import (
 	"go/parser"
 	"go/token"
 	"go/types"
+	"regexp"
 	"strings"
 )
 
@@ -44,6 +45,11 @@ type Match struct {
 // e.g. {"x": "io.Reader", "err": "error"}
 type TypeConstraint map[string]string
 
+// NameConstraint maps metavariable names to regex patterns that
+// the bound identifier name must match.
+// e.g. {"x": "^test.*", "fn": "^(Get|Set).*"}
+type NameConstraint map[string]string
+
 // EquivalenceExpander can expand a node into semantically equivalent forms.
 // This is implemented by iso.Registry.
 type EquivalenceExpander interface {
@@ -56,7 +62,8 @@ type Pattern struct {
 	node            ast.Node // parsed pattern AST
 	meta            map[string]metaKind
 	typeConstraints TypeConstraint
-	equivalences    EquivalenceExpander // optional isomorphism expander
+	nameConstraints map[string]*regexp.Regexp // compiled regex per metavar
+	equivalences    EquivalenceExpander       // optional isomorphism expander
 }
 
 type metaKind int
@@ -136,6 +143,23 @@ func (p *Pattern) WithTypeConstraints(tc TypeConstraint) *Pattern {
 	cp := *p
 	cp.typeConstraints = tc
 	return &cp
+}
+
+// WithNameConstraints returns a copy of the pattern with name constraints set.
+// Name constraints restrict metavariable bindings to identifiers whose names
+// match the given regexes. Returns an error if any regex is invalid.
+func (p *Pattern) WithNameConstraints(nc NameConstraint) (*Pattern, error) {
+	compiled := make(map[string]*regexp.Regexp, len(nc))
+	for varName, regex := range nc {
+		re, err := regexp.Compile(regex)
+		if err != nil {
+			return nil, fmt.Errorf("invalid regex for $%s: %w", varName, err)
+		}
+		compiled[varName] = re
+	}
+	cp := *p
+	cp.nameConstraints = compiled
+	return &cp, nil
 }
 
 // WithEquivalences returns a copy of the pattern that will try matching
@@ -233,6 +257,26 @@ func (p *Pattern) enforceTypeConstraints(bindings Bindings, info *types.Info) *B
 			if !typeMatches(b.Type, requiredType) {
 				return nil
 			}
+		}
+	}
+	return p.enforceNameConstraints(bindings)
+}
+
+func (p *Pattern) enforceNameConstraints(bindings Bindings) *Bindings {
+	if len(p.nameConstraints) == 0 {
+		return &bindings
+	}
+	for varName, re := range p.nameConstraints {
+		b, ok := bindings[varName]
+		if !ok {
+			return nil
+		}
+		ident, ok := b.Node.(*ast.Ident)
+		if !ok {
+			return nil // bound to non-ident, can't check name
+		}
+		if !re.MatchString(ident.Name) {
+			return nil
 		}
 	}
 	return &bindings

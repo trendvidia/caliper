@@ -16,7 +16,6 @@ import (
 	"go/types"
 	"path/filepath"
 	"strings"
-	"sync"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -25,8 +24,10 @@ import (
 	"github.com/trendvidia/gocaliper/pkg/analysis"
 	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
 	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/gocaliper/pkg/gcl"
 	"github.com/trendvidia/gocaliper/pkg/analysis/taint"
 	"github.com/trendvidia/gocaliper/pkg/analysis/templates"
+	"github.com/trendvidia/gocaliper/pkg/config"
 	"github.com/trendvidia/gocaliper/pkg/iso"
 	"github.com/trendvidia/gocaliper/pkg/transform"
 )
@@ -35,15 +36,27 @@ import (
 type Server struct {
 	mcp   *mcpserver.MCPServer
 	iso   *iso.Registry
-	mu    sync.RWMutex
-	cache map[string]*analysis.Engine // abs path -> cached engine
+	cache *engineCache
+	cfg   *config.Config
 }
 
 // NewServer creates and configures the MCP server with all tools.
+// It loads .gocaliper.yaml from the current working directory (or parents).
 func NewServer() (*Server, error) {
+	cfg, err := config.Load(".")
+	if err != nil {
+		return nil, fmt.Errorf("loading config: %w", err)
+	}
+
+	cacheSize := defaultMaxCacheEntries
+	if cfg.Engine.MaxCacheEntries > 0 {
+		cacheSize = cfg.Engine.MaxCacheEntries
+	}
+
 	s := &Server{
 		iso:   iso.NewRegistry(),
-		cache: make(map[string]*analysis.Engine),
+		cache: newEngineCache(cacheSize),
+		cfg:   cfg,
 	}
 
 	s.mcp = mcpserver.NewMCPServer(
@@ -52,7 +65,6 @@ func NewServer() (*Server, error) {
 		mcpserver.WithToolCapabilities(true),
 	)
 
-	// Register all tools with their handlers.
 	s.registerTools()
 	return s, nil
 }
@@ -77,6 +89,9 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(explainMatchTool, s.handleExplainMatch)
 	s.mcp.AddTool(listEquivalencesTool, s.handleListEquivalences)
 
+	// Phase 5: Pattern language.
+	s.mcp.AddTool(runPatternsTool, s.handleRunPatterns)
+
 	// Phase 4: Advanced analysis.
 	s.mcp.AddTool(findGoroutineLeakTool, s.handleFindGoroutineLeak)
 	s.mcp.AddTool(findSQLInjectionTool, s.handleFindSQLInjection)
@@ -86,29 +101,50 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(findCallSitesTool, s.handleFindCallSites)
 }
 
+// defaultPath returns the given path or the configured default.
+func (s *Server) defaultPath(path string) string {
+	if path != "" {
+		return path
+	}
+	return s.cfg.DefaultPath()
+}
+
 // getEngine returns a cached engine for the given path, creating one on cache miss.
 func (s *Server) getEngine(path string) (*analysis.Engine, error) {
+	return s.getEngineWithProgress(path, nil)
+}
+
+// getEngineWithProgress is like getEngine but sends progress notifications
+// during package loading when a progress token is present.
+func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.Engine, error) {
 	absPath, err := filepath.Abs(path)
 	if err != nil {
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
-	s.mu.RLock()
-	if eng, ok := s.cache[absPath]; ok {
-		s.mu.RUnlock()
+	if eng := s.cache.get(absPath); eng != nil {
 		return eng, nil
 	}
-	s.mu.RUnlock()
 
-	eng, err := analysis.NewEngine(absPath)
+	if prog != nil {
+		prog.send(0, 3, "Loading packages...")
+	}
+
+	opts := analysis.EngineOptions{
+		SkipGenerated: s.cfg.SkipGenerated(),
+		SkipCgo:       s.cfg.SkipCgo(),
+		BuildTags:     s.cfg.Engine.BuildTags,
+	}
+	eng, err := analysis.NewEngineWithOptions(absPath, opts)
 	if err != nil {
 		return nil, err
 	}
 
-	s.mu.Lock()
-	s.cache[absPath] = eng
-	s.mu.Unlock()
+	if prog != nil {
+		prog.send(1, 3, "Packages loaded")
+	}
 
+	s.cache.put(absPath, eng)
 	return eng, nil
 }
 
@@ -116,9 +152,7 @@ func (s *Server) getEngine(path string) (*analysis.Engine, error) {
 // Must be called after transforms that modify files on disk.
 func (s *Server) invalidateEngine(path string) {
 	absPath, _ := filepath.Abs(path)
-	s.mu.Lock()
-	delete(s.cache, absPath)
-	s.mu.Unlock()
+	s.cache.invalidate(absPath)
 }
 
 // --------------------------------------------------------------------------
@@ -128,18 +162,65 @@ func (s *Server) invalidateEngine(path string) {
 func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	pattern := stringParam(req, "pattern")
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	p, err := patterns.Compile(pattern)
 	if err != nil {
 		return errorResult("Invalid pattern: %v", err), nil
 	}
 
-	engine, err := s.getEngine(path)
+	// Apply name constraints if provided.
+	if nc, ok := req.Params.Arguments["name_constraints"]; ok {
+		if ncMap, ok := nc.(map[string]any); ok && len(ncMap) > 0 {
+			nameConst := make(patterns.NameConstraint, len(ncMap))
+			for k, v := range ncMap {
+				if vs, ok := v.(string); ok {
+					nameConst[k] = vs
+				}
+			}
+			p, err = p.WithNameConstraints(nameConst)
+			if err != nil {
+				return errorResult("Invalid name constraint: %v", err), nil
+			}
+		}
+	}
+
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
+	}
+	if prog.active() {
+		prog.send(2, 3, "Matching patterns...")
+	}
+
+	// Negative mode: find functions where the pattern is absent.
+	if boolParam(req, "negative") {
+		neg := patterns.NewNegative(p)
+		absences := neg.MatchAbsence(engine)
+
+		var matches []map[string]any
+		for _, m := range absences {
+			match := map[string]any{
+				"file": m.File,
+				"line": m.Line,
+			}
+			if len(m.Bindings) > 0 {
+				bindMap := make(map[string]string)
+				for name, b := range m.Bindings {
+					bindMap[name] = printNode(engine.Fset(), b.Node)
+				}
+				match["bindings"] = bindMap
+			}
+			matches = append(matches, match)
+		}
+
+		return jsonResult(map[string]any{
+			"pattern":       pattern,
+			"negative":      true,
+			"total_matches": len(matches),
+			"matches":       matches,
+		}), nil
 	}
 
 	var matches []map[string]any
@@ -170,18 +251,16 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 	})
 
 	return jsonResult(map[string]any{
-		"pattern":      pattern,
+		"pattern":       pattern,
 		"total_matches": len(matches),
-		"matches":      matches,
+		"matches":       matches,
 	}), nil
 }
 
 func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	typeName := stringParam(req, "type_name")
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -310,9 +389,7 @@ func (s *Server) handleFindResourceLeak(ctx context.Context, req mcpsdk.CallTool
 	path := stringParam(req, "path")
 	severity := stringParam(req, "severity")
 
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 	allPaths := severity != "any_path"
 
 	tmpl, err := templates.NewResourceLeak(acquirePattern, releaseMethod, allPaths)
@@ -320,23 +397,25 @@ func (s *Server) handleFindResourceLeak(ctx context.Context, req mcpsdk.CallTool
 		return errorResult("Invalid acquire pattern: %v", err), nil
 	}
 
-	engine, err := s.getEngine(path)
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
 
+	if prog.active() {
+		prog.send(2, 3, "Analyzing resource leaks...")
+	}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	if prog.active() {
+		prog.send(3, 3, "Done")
+	}
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindUncheckedError(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	includeDefers := boolParam(req, "include_defers")
 	includeExplicit := boolParamDefault(req, "include_explicit_blank", true)
@@ -346,23 +425,25 @@ func (s *Server) handleFindUncheckedError(ctx context.Context, req mcpsdk.CallTo
 		IncludeExplicit: includeExplicit,
 	}
 
-	engine, err := s.getEngine(path)
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
 
+	if prog.active() {
+		prog.send(2, 3, "Checking for unchecked errors...")
+	}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	if prog.active() {
+		prog.send(3, 3, "Done")
+	}
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindLockViolation(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	checkBlocking := boolParamDefault(req, "check_blocking_under_lock", true)
 
@@ -370,23 +451,25 @@ func (s *Server) handleFindLockViolation(ctx context.Context, req mcpsdk.CallToo
 		CheckBlockingUnderLock: checkBlocking,
 	}
 
-	engine, err := s.getEngine(path)
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
 
+	if prog.active() {
+		prog.send(2, 3, "Checking lock discipline...")
+	}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	if prog.active() {
+		prog.send(3, 3, "Done")
+	}
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindNilDeref(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -404,10 +487,7 @@ func (s *Server) handleFindNilDeref(ctx context.Context, req mcpsdk.CallToolRequ
 	tmpl := &templates.NilDeref{FuncPattern: funcPattern}
 	findings := templates.RunTemplate(engine, tmpl)
 
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -417,9 +497,7 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 	excludePattern := stringParam(req, "exclude_pattern")
 	path := stringParam(req, "path")
 
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -596,13 +674,15 @@ func (s *Server) handleApplyTransform(ctx context.Context, req mcpsdk.CallToolRe
 	path := stringParam(req, "path")
 	preview := boolParamDefault(req, "preview", true)
 
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
+	}
+	if prog.active() {
+		prog.send(2, 3, "Applying transformation...")
 	}
 
 	rw, err := transform.NewRewriter(engine, matchPat, replacePat)
@@ -621,7 +701,7 @@ func (s *Server) handleApplyTransform(ctx context.Context, req mcpsdk.CallToolRe
 		return errorResult("Transform failed: %v", err), nil
 	}
 
-	return jsonResult(result), nil
+	return jsonResult(transformResultWithDiff(result)), nil
 }
 
 func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -629,9 +709,7 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 	preview := boolParamDefault(req, "preview", true)
 	updateImports := boolParamDefault(req, "update_imports", true)
 
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	// Parse rules from request.
 	rulesRaw, ok := req.Params.Arguments["rules"]
@@ -667,7 +745,7 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 		return errorResult("Migration failed: %v", err), nil
 	}
 
-	return jsonResult(result), nil
+	return jsonResult(transformResultWithDiff(result)), nil
 }
 
 func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -677,9 +755,7 @@ func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToo
 	path := stringParam(req, "path")
 	preview := boolParamDefault(req, "preview", true)
 
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -702,7 +778,7 @@ func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToo
 		return errorResult("Cleanup insertion failed: %v", err), nil
 	}
 
-	return jsonResult(result), nil
+	return jsonResult(transformResultWithDiff(result)), nil
 }
 
 func (s *Server) handleExplainMatch(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
@@ -805,14 +881,69 @@ func (s *Server) handleListEquivalences(ctx context.Context, req mcpsdk.CallTool
 }
 
 // --------------------------------------------------------------------------
+// Phase 5: Pattern language handlers
+// --------------------------------------------------------------------------
+
+func (s *Server) handleRunPatterns(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	gclFile := stringParam(req, "gcl_file")
+	path := stringParam(req, "path")
+	ruleName := stringParam(req, "rule")
+	path = s.defaultPath(path)
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	// Determine which .gcl files to load.
+	var gclPaths []string
+	if gclFile != "" {
+		gclPaths = []string{gclFile}
+	} else {
+		absPath, _ := filepath.Abs(path)
+		gclPaths = s.cfg.GCLPatterns(absPath)
+	}
+
+	if len(gclPaths) == 0 {
+		return errorResult("No .gcl files specified. Provide gcl_file parameter or configure patterns in .gocaliper.yaml."), nil
+	}
+
+	var allFindings []map[string]any
+	for _, gp := range gclPaths {
+		loaded, err := gcl.Load(gp)
+		if err != nil {
+			return errorResult("Loading %s: %v", gp, err), nil
+		}
+		results := gcl.Run(loaded, engine)
+		for _, r := range results {
+			if ruleName != "" && r.RuleName != ruleName {
+				continue
+			}
+			for _, f := range r.Findings {
+				allFindings = append(allFindings, map[string]any{
+					"rule":     r.RuleName,
+					"gcl_file": gp,
+					"severity": f.Severity,
+					"message":  f.Message,
+					"location": f.Location,
+				})
+			}
+		}
+	}
+
+	return jsonResult(map[string]any{
+		"total_findings": len(allFindings),
+		"findings":       allFindings,
+	}), nil
+}
+
+// --------------------------------------------------------------------------
 // Phase 4: Advanced analysis handlers
 // --------------------------------------------------------------------------
 
 func (s *Server) handleFindGoroutineLeak(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -821,17 +952,12 @@ func (s *Server) handleFindGoroutineLeak(ctx context.Context, req mcpsdk.CallToo
 
 	tmpl := &templates.GoroutineLeak{}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindSQLInjection(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -840,17 +966,12 @@ func (s *Server) handleFindSQLInjection(ctx context.Context, req mcpsdk.CallTool
 
 	tmpl := &templates.SQLInjection{}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindRaceCondition(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	engine, err := s.getEngine(path)
 	if err != nil {
@@ -859,17 +980,12 @@ func (s *Server) handleFindRaceCondition(ctx context.Context, req mcpsdk.CallToo
 
 	tmpl := &templates.RaceCondition{}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindContextMisuse(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	flagTodo := boolParamDefault(req, "flag_todo", true)
 
@@ -880,28 +996,30 @@ func (s *Server) handleFindContextMisuse(ctx context.Context, req mcpsdk.CallToo
 
 	tmpl := &templates.ContextMisuse{FlagTodo: flagTodo}
 	findings := templates.RunTemplate(engine, tmpl)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	}), nil
+	return s.findingsResult(findings), nil
 }
 
 func (s *Server) handleFindTaintFlow(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
 	sourceType := stringParam(req, "source_type")
 	sinkFunction := stringParam(req, "sink_function")
 	path := stringParam(req, "path")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	prog := newProgress(ctx, req)
+	engine, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
 
+	if prog.active() {
+		prog.send(2, 4, "Building call graph...")
+	}
 	ipc, err := engine.InterProcedural()
 	if err != nil {
 		return errorResult("Failed to build call graph: %v", err), nil
+	}
+	if prog.active() {
+		prog.send(3, 4, "Tracing taint flows...")
 	}
 
 	// Parse source type: "*net/http.Request" → package="net/http", type="Request"
@@ -960,9 +1078,7 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 	functionPattern := stringParam(req, "function_pattern")
 	path := stringParam(req, "path")
 	algoStr := stringParam(req, "algorithm")
-	if path == "" {
-		path = "."
-	}
+	path = s.defaultPath(path)
 
 	pat, err := patterns.Compile(functionPattern)
 	if err != nil {
@@ -1166,6 +1282,41 @@ func typeStringMatches(t types.Type, fullName, baseName string) bool {
 		return typeStringMatches(ptr.Elem(), strings.TrimPrefix(fullName, "*"), baseName)
 	}
 	return false
+}
+
+// applySeverityOverrides applies configured severity overrides to findings.
+func (s *Server) applySeverityOverrides(findings []templates.Finding) []templates.Finding {
+	if s.cfg == nil || len(s.cfg.Severity) == 0 {
+		return findings
+	}
+	for i := range findings {
+		findings[i].Severity = s.cfg.SeverityFor(findings[i].Kind, findings[i].Severity)
+	}
+	return findings
+}
+
+// findingsResult builds a JSON result from findings, applying config overrides.
+func (s *Server) findingsResult(findings []templates.Finding) *mcpsdk.CallToolResult {
+	findings = s.applySeverityOverrides(findings)
+	return jsonResult(map[string]any{
+		"total_findings": len(findings),
+		"findings":       findings,
+	})
+}
+
+// transformResultWithDiff wraps a transform.Result, adding unified diffs
+// so that LLMs can review changes before applying.
+func transformResultWithDiff(r *transform.Result) map[string]any {
+	m := map[string]any{
+		"changes":        r.Changes,
+		"files_affected": r.Files,
+		"total_changes":  r.Total,
+		"preview":        r.Preview,
+	}
+	if len(r.Changes) > 0 {
+		m["diffs"] = r.UnifiedDiff(3)
+	}
+	return m
 }
 
 // printNode renders an AST node as Go source code.

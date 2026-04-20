@@ -440,12 +440,44 @@ func example(c io.Closer) {
 	}
 
 	// Verify cache entry exists.
-	srv.mu.RLock()
-	cached := len(srv.cache)
-	srv.mu.RUnlock()
-
-	if cached != 1 {
+	if cached := srv.cache.size(); cached != 1 {
 		t.Errorf("expected 1 cached engine, got %d", cached)
+	}
+}
+
+// --------------------------------------------------------------------------
+// Progress notifications
+// --------------------------------------------------------------------------
+
+func TestProgress_NoToken(t *testing.T) {
+	// When no progress token is in the request, newProgress should
+	// return a no-op notifier that doesn't panic.
+	req := makeRequest(map[string]any{"pattern": "$x.Close()"})
+	prog := newProgress(context.Background(), req)
+	if prog.active() {
+		t.Error("expected inactive progress without token")
+	}
+	// Should be safe to call send even when inactive.
+	prog.send(1, 3, "test")
+}
+
+func TestProgress_WithToken(t *testing.T) {
+	// Verify that newProgress extracts the token from Meta.
+	token := "test-token-123"
+	req := mcpsdk.CallToolRequest{
+		Params: struct {
+			Name      string         `json:"name"`
+			Arguments map[string]any `json:"arguments,omitempty"`
+			Meta      *mcpsdk.Meta   `json:"_meta,omitempty"`
+		}{
+			Arguments: map[string]any{"pattern": "$x.Close()"},
+			Meta:      &mcpsdk.Meta{ProgressToken: token},
+		},
+	}
+	prog := newProgress(context.Background(), req)
+	// Token should be set, but server won't be available from plain context.
+	if prog.token == nil {
+		t.Error("expected non-nil progress token")
 	}
 }
 
@@ -473,10 +505,7 @@ func hello() string { return "hi" }
 		t.Fatal(err)
 	}
 
-	srv.mu.RLock()
-	cached := len(srv.cache)
-	srv.mu.RUnlock()
-	if cached != 1 {
+	if cached := srv.cache.size(); cached != 1 {
 		t.Fatalf("expected 1 cached engine, got %d", cached)
 	}
 
@@ -492,10 +521,7 @@ func hello() string { return "hi" }
 		t.Fatal(err)
 	}
 
-	srv.mu.RLock()
-	cached = len(srv.cache)
-	srv.mu.RUnlock()
-	if cached != 0 {
+	if cached := srv.cache.size(); cached != 0 {
 		t.Errorf("expected 0 cached engines after invalidation, got %d", cached)
 	}
 

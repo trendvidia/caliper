@@ -1,0 +1,20 @@
+version: 1
+name: "resource-safety"
+description: "Rules for resource lifecycle safety"
+
+patterns:
+  open_call:
+    pattern: "$f, $err := os.Open($path)"
+    description: "File open via os.Open"
+  close_call:
+    pattern: "$x.Close()"
+    description: "Any Close() call"
+
+rules:
+  - name: "unclosed-file"
+    description: "os.Open without matching Close"
+    severity: "warning"
+    match: "@open_call"
+    absent: "@close_call"
+    scope: "function"
+    message: "File opened but never closed"

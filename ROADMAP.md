@@ -76,16 +76,16 @@
 ## Phase 5 — Developer Experience
 
 ### MCP Integration
-- [ ] Structured diff output — return unified diffs that LLMs can review before applying
-- [ ] Progress notifications for large codebases (MCP progress tokens)
-- [ ] Caching — reuse parsed packages across tool calls within a session
-- [ ] Configurable severity levels and rule sets via `.gocaliper.yaml`
+- [x] Structured diff output — return unified diffs that LLMs can review before applying
+- [x] Progress notifications for large codebases (MCP progress tokens)
+- [x] Caching — reuse parsed packages across tool calls within a session
+- [x] Configurable severity levels and rule sets via `.gocaliper.yaml`
 
 ### Pattern Language
-- [ ] Pattern file format (`.gcl`) for reusable, shareable patterns
-- [ ] Pattern composition — define named sub-patterns and reference them
-- [ ] Negative patterns — `!$x.Close()` to match absence of a call
-- [ ] Regex constraints on metavariables — `$x where name matches /^test.*/`
+- [x] Pattern file format (`.gcl`) for reusable, shareable patterns
+- [x] Pattern composition — define named sub-patterns and reference them
+- [x] Negative patterns — `!$x.Close()` to match absence of a call
+- [x] Regex constraints on metavariables — `$x where name matches /^test.*/`
 
 ### Distribution
 - [x] Homebrew formula
