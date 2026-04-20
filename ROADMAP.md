@@ -155,25 +155,41 @@ GoCaliper's metavariables are untyped (match anything). Coccinelle's are typed (
 - [ ] Typed metavariable declarations — `identifier $fn;`, `expression $e;`, `statement $s;`, `type $T;`, `constant $c;`
 - [ ] `idexpression` — metavariable that only matches simple identifiers (not complex expressions), the most common case in Coccinelle
 - [ ] Position metavariables — `position $p;` captures source location for script rules and reporting
-- [ ] Fresh identifiers — `fresh identifier $new = $old ## "_v2";` generates new names in replacements
+- [ ] Fresh identifiers — `fresh identifier $new = $old ## "_v2";` generates new names in replacements (complex name computation via GoVM script rules)
 - [ ] Metavariable constraints in declarations — `identifier $fn != "init";` or `expression $e : type == "*os.File";` (unify type/name constraints with metavar decl syntax)
 - [ ] Inherited metavariable scoping — explicit `@@` section declaring which metavars are inherited vs fresh
 
-### Script Rules
+### Script Rules (powered by GoVM)
 
-Coccinelle uses Python/OCaml scripts for logic too complex for patterns. GoCaliper should support Go expressions or a lightweight scripting language.
+Coccinelle uses Python/OCaml scripts for logic too complex for patterns. GoCaliper uses GoVM (`github.com/trendvidia/govm`) — a full Go interpreter with JIT, bytecode caching, and sandboxing — so script rules are written in real Go, not a foreign DSL.
 
-- [ ] Script rules using `expr` (github.com/expr-lang/expr) for boolean filtering:
+- [ ] Script filter predicates using GoVM's `eval` package — compile-once/eval-many for high-throughput filtering:
   ```
-  @script:expr depends on rule1@
+  @script:go depends on rule1@
   fn << rule1.fn;
   @@
   fn.Name != "main" && !strings.HasPrefix(fn.Name, "Test")
   ```
-- [ ] Script-computed replacements — script returns a string used as the replacement
-- [ ] Access to type information in scripts — `typeof($x)`, `implements($x, "io.Closer")`
-- [ ] Script-based message formatting — custom error messages using bound metavariable values
+- [ ] Full Go script rules via GoVM bytecode — for complex logic that needs loops, maps, or helper functions:
+  ```
+  @script:go depends on rule1@
+  x << rule1.x;
+  @@
+  func filter() bool {
+      // Full Go: loops, string ops, type inspection
+      return len(x.Name) > 3 && unicode.IsUpper(rune(x.Name[0]))
+  }
+  ```
+- [ ] Native function injection — register AST/type inspection helpers into the GoVM sandbox:
+  - `typeof(node)` → returns type string of a bound metavariable
+  - `implements(node, "io.Closer")` → interface satisfaction check
+  - `callers(fn)` → call graph query from script context
+  - `hasAnnotation(fn, "//go:generate")` → comment/directive checks
+- [ ] Script-computed replacements — script returns a string or AST fragment used as the replacement text
+- [ ] Script-based message formatting — custom error messages using bound metavariable values and Go's `fmt.Sprintf`
 - [ ] Iteration until fixpoint — repeatedly apply a semantic patch until no more matches (for transitive refactoring)
+- [ ] GoVM sandbox configuration — resource limits (timeout, max goroutines, no file I/O) enforced per-rule; only safe stdlib modules loaded (fmt, strings, math, regexp, strconv, unicode)
+- [ ] Bytecode caching — compiled script rules cached at `~/.govm/cache/` via content-addressed hashing, skip recompilation on repeated runs
 
 ### Batch CLI Mode
 
