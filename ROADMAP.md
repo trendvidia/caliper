@@ -92,3 +92,121 @@
 - [ ] Docker image for CI usage
 - [x] Claude Code MCP config snippet (`claude_desktop_config.json` example)
 - [ ] VS Code extension that runs GoCaliper as an MCP server
+
+## Phase 6 — Coccinelle Parity
+
+The features below close the remaining gap between GoCaliper and what Coccinelle provides for C/Linux kernel refactoring. They transform GoCaliper from a pattern-finder into a full semantic patch engine for Go.
+
+### CFG-Aware Pattern Matching (the `...` that understands control flow)
+
+Currently `...` is syntactic (matches any statements in a block). In Coccinelle, `...` means "there exists a control-flow path between these two points." This is the single most important gap.
+
+- [ ] `...` in patterns uses CFG reachability, not just statement list matching — `$x.Lock(); ...; $x.Unlock()` means "Lock reaches Unlock on some path," not "they appear in the same block"
+- [ ] `when` clauses on `...` — path constraints that filter which paths are acceptable:
+  - `... when != $x.Unlock()` — path must NOT contain Unlock (for finding missing unlocks)
+  - `... when any` — match even if only some paths satisfy (existential, default is universal)
+  - `... when strict` — no alternative paths allowed (every path from A must reach B)
+  - `... when != return` — path must not contain a return statement
+- [ ] `<... pattern ...>` — existential dots: pattern appears somewhere within the enclosing scope (any path, any depth)
+- [ ] `<+... pattern ...+>` — universal dots: pattern appears on ALL paths through the scope
+- [ ] Dots with binding — `...; $x = $expr; ...` where bindings from the dots-bounded region are captured and available in subsequent rules
+
+### Semantic Patch Language (SmPL for Go)
+
+The `.gcl` format handles find-and-report. SmPL-style semantic patches handle large-scale refactoring with `-`/`+` annotations, rule chaining, and inherited metavariables.
+
+- [ ] `.gsp` file format (Go Semantic Patch) with `-`/`+` line annotations for expressing transformations as diffs:
+  ```
+  @rule1@
+  identifier fn;
+  expression E;
+  @@
+  - old_api(E)
+  + new_api(context.TODO(), E)
+  ```
+- [ ] Multi-rule patches — rule chaining where later rules inherit metavariables from earlier rules:
+  ```
+  @rule1@
+  identifier pkg;
+  @@
+    import "pkg"
+
+  @rule2 depends on rule1@
+  expression E;
+  @@
+  - pkg.OldFunc(E)
+  + pkg.NewFunc(context.TODO(), E)
+  ```
+- [ ] `depends on` / `depends on !` — conditional rule execution (run rule2 only if rule1 matched / didn't match)
+- [ ] Inherited metavariables — metavariables bound in rule N are available in rule N+1 without re-matching
+- [ ] Star rules (`@rule*@`) — find-only rules that report matches without transforming (for auditing)
+- [ ] MCP `apply_semantic_patch` tool — load and apply `.gsp` files with preview/apply modes
+
+### Disjunction and Optional Patterns
+
+- [ ] Disjunction patterns — `( pattern1 | pattern2 | pattern3 )` to match any of several alternatives in a single rule
+- [ ] Optional match — `?pattern` matches zero or one occurrence (for optional error checks, optional context args)
+- [ ] Nested disjunctions — disjunctions within `-`/`+` blocks to handle multiple refactoring variants in one rule
+
+### Metavariable System
+
+GoCaliper's metavariables are untyped (match anything). Coccinelle's are typed (identifier, expression, statement, type, constant, etc.), which prevents false positives.
+
+- [ ] Typed metavariable declarations — `identifier $fn;`, `expression $e;`, `statement $s;`, `type $T;`, `constant $c;`
+- [ ] `idexpression` — metavariable that only matches simple identifiers (not complex expressions), the most common case in Coccinelle
+- [ ] Position metavariables — `position $p;` captures source location for script rules and reporting
+- [ ] Fresh identifiers — `fresh identifier $new = $old ## "_v2";` generates new names in replacements
+- [ ] Metavariable constraints in declarations — `identifier $fn != "init";` or `expression $e : type == "*os.File";` (unify type/name constraints with metavar decl syntax)
+- [ ] Inherited metavariable scoping — explicit `@@` section declaring which metavars are inherited vs fresh
+
+### Script Rules
+
+Coccinelle uses Python/OCaml scripts for logic too complex for patterns. GoCaliper should support Go expressions or a lightweight scripting language.
+
+- [ ] Script rules using `expr` (github.com/expr-lang/expr) for boolean filtering:
+  ```
+  @script:expr depends on rule1@
+  fn << rule1.fn;
+  @@
+  fn.Name != "main" && !strings.HasPrefix(fn.Name, "Test")
+  ```
+- [ ] Script-computed replacements — script returns a string used as the replacement
+- [ ] Access to type information in scripts — `typeof($x)`, `implements($x, "io.Closer")`
+- [ ] Script-based message formatting — custom error messages using bound metavariable values
+- [ ] Iteration until fixpoint — repeatedly apply a semantic patch until no more matches (for transitive refactoring)
+
+### Batch CLI Mode
+
+Coccinelle's `spatch` is a CLI tool that processes entire kernel trees. GoCaliper needs an equivalent for CI pipelines and large-scale refactoring campaigns.
+
+- [ ] `gocaliper run` CLI command — run `.gcl`/`.gsp` files against a codebase, output findings to stdout
+- [ ] `gocaliper patch` CLI command — apply `.gsp` semantic patches, write modified files or output unified diffs
+- [ ] `gocaliper check` CLI command — exit non-zero if any findings (for CI gates)
+- [ ] SARIF output format — standard static analysis format for GitHub Code Scanning / VS Code integration
+- [ ] Parallel file processing — process packages concurrently with worker pool (already have `parmap`-style infra in engine)
+- [ ] `--include`/`--exclude` glob filters for targeting specific files/packages
+- [ ] `--diff` mode — only analyze files changed in a git diff (PR-scoped analysis)
+- [ ] Configuration via `.gocaliper.yaml` `patterns:` to auto-discover `.gcl`/`.gsp` files
+
+### Isomorphism Files
+
+Coccinelle loads equivalences from `.iso` files that users can customize. GoCaliper's `pkg/iso` is hardcoded.
+
+- [ ] `.iso` file format for user-defined equivalences:
+  ```
+  Expression
+  @ eq_nil @
+  expression E;
+  @@
+  E == nil => !(E != nil)
+  ```
+- [ ] Load `.iso` files from `.gocaliper.yaml` config or `--iso` CLI flag
+- [ ] Conditional isomorphisms — only apply in certain contexts (e.g., error-handling isos only in `if err != nil` blocks)
+- [ ] Isomorphism composition — apply multiple `.iso` files, with priority ordering
+
+### Distribution (remaining)
+
+- [ ] Docker image for CI usage
+- [ ] VS Code extension that runs GoCaliper as an MCP server
+- [ ] `gocaliper init` command — scaffold `.gocaliper.yaml` and example `.gcl` files
+- [ ] Pattern library repository — community-maintained `.gcl`/`.gsp` files for common Go idioms and migrations
