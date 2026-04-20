@@ -1,8 +1,8 @@
 // Package gcl implements loading and running .gcl pattern files.
 //
-// A .gcl file is a YAML document that defines named patterns and rules
-// for finding code issues. Patterns can be referenced by name in rules
-// using the @name syntax.
+// A .gcl file is a PXF document (Proto eXpressive Format) that defines
+// named patterns and rules for finding code issues. Patterns can be
+// referenced by name in rules using the @name syntax.
 package gcl
 
 import (
@@ -10,39 +10,11 @@ import (
 	"os"
 	"strings"
 
-	"gopkg.in/yaml.v3"
+	"github.com/trendvidia/protowire/encoding/pxf"
 
 	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	pb "github.com/trendvidia/gocaliper/pkg/gocaliperpb"
 )
-
-// GCLFile represents a parsed .gcl file.
-type GCLFile struct {
-	Version     int                   `yaml:"version"`
-	Name        string                `yaml:"name"`
-	Description string                `yaml:"description,omitempty"`
-	Patterns    map[string]GCLPattern `yaml:"patterns,omitempty"`
-	Rules       []GCLRule             `yaml:"rules"`
-}
-
-// GCLPattern defines a named pattern with optional constraints.
-type GCLPattern struct {
-	Pattern         string            `yaml:"pattern"`
-	TypeConstraints map[string]string `yaml:"type_constraints,omitempty"`
-	NameConstraints map[string]string `yaml:"name_constraints,omitempty"`
-	Description     string            `yaml:"description,omitempty"`
-}
-
-// GCLRule defines a rule that uses patterns to find code issues.
-type GCLRule struct {
-	Name        string `yaml:"name"`
-	Description string `yaml:"description,omitempty"`
-	Severity    string `yaml:"severity,omitempty"`
-	Match       string `yaml:"match"`
-	Absent      string `yaml:"absent,omitempty"`
-	Contains    string `yaml:"contains,omitempty"`
-	Scope       string `yaml:"scope,omitempty"`
-	Message     string `yaml:"message,omitempty"`
-}
 
 // ResolvedRule is a rule with all pattern references resolved to compiled patterns.
 type ResolvedRule struct {
@@ -58,7 +30,7 @@ type ResolvedRule struct {
 
 // LoadedGCL is a fully parsed and compiled .gcl file.
 type LoadedGCL struct {
-	File     GCLFile
+	Proto    *pb.GCLFile
 	Patterns *patterns.PatternSet
 	Rules    []ResolvedRule
 	Source   string // file path
@@ -75,8 +47,8 @@ func Load(path string) (*LoadedGCL, error) {
 
 // LoadBytes parses .gcl content from bytes.
 func LoadBytes(data []byte, source string) (*LoadedGCL, error) {
-	var file GCLFile
-	if err := yaml.Unmarshal(data, &file); err != nil {
+	var file pb.GCLFile
+	if err := pxf.Unmarshal(data, &file); err != nil {
 		return nil, fmt.Errorf("parsing %s: %w", source, err)
 	}
 
@@ -119,14 +91,14 @@ func LoadBytes(data []byte, source string) (*LoadedGCL, error) {
 	}
 
 	return &LoadedGCL{
-		File:     file,
+		Proto:    &file,
 		Patterns: ps,
 		Rules:    rules,
 		Source:   source,
 	}, nil
 }
 
-func resolveRule(r GCLRule, ps *patterns.PatternSet) (ResolvedRule, error) {
+func resolveRule(r *pb.Rule, ps *patterns.PatternSet) (ResolvedRule, error) {
 	resolved := ResolvedRule{
 		Name:        r.Name,
 		Description: r.Description,

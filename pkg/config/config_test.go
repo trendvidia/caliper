@@ -15,7 +15,6 @@ func TestLoad_NoFile(t *testing.T) {
 	if cfg == nil {
 		t.Fatal("expected non-nil config")
 	}
-	// Should return defaults.
 	if cfg.DefaultPath() != "." {
 		t.Errorf("expected default path '.', got %q", cfg.DefaultPath())
 	}
@@ -26,26 +25,26 @@ func TestLoad_NoFile(t *testing.T) {
 
 func TestLoad_WithFile(t *testing.T) {
 	dir := t.TempDir()
-	yaml := `
-severity:
-  resource_leak: error
-  unchecked_error: warning
-rules:
-  enable:
-    - resource_leak
-    - unchecked_error
-  disable:
-    - lock_violation
-engine:
-  skip_generated: false
-  build_tags:
-    - integration
-  max_cache_entries: 16
-defaults:
-  path: ./cmd/...
-  preview: false
+	pxfData := `
+severity = {
+  resource_leak: "error"
+  unchecked_error: "warning"
+}
+rules {
+  enable = ["resource_leak", "unchecked_error"]
+  disable = ["lock_violation"]
+}
+engine {
+  skip_generated = false
+  build_tags = ["integration"]
+  max_cache_entries = 16
+}
+defaults {
+  path = "./cmd/..."
+  preview = false
+}
 `
-	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.yaml"), []byte(yaml), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -75,12 +74,12 @@ defaults:
 		t.Error("expected SkipGenerated false")
 	}
 
-	if len(cfg.Engine.BuildTags) != 1 || cfg.Engine.BuildTags[0] != "integration" {
-		t.Errorf("unexpected build tags: %v", cfg.Engine.BuildTags)
+	if tags := cfg.BuildTags(); len(tags) != 1 || tags[0] != "integration" {
+		t.Errorf("unexpected build tags: %v", tags)
 	}
 
-	if cfg.Engine.MaxCacheEntries != 16 {
-		t.Errorf("expected max_cache_entries 16, got %d", cfg.Engine.MaxCacheEntries)
+	if cfg.MaxCacheEntries() != 16 {
+		t.Errorf("expected max_cache_entries 16, got %d", cfg.MaxCacheEntries())
 	}
 
 	if cfg.DefaultPath() != "./cmd/..." {
@@ -95,10 +94,8 @@ func TestLoad_ParentDirectory(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	yaml := `severity:
-  test_rule: error
-`
-	if err := os.WriteFile(filepath.Join(parent, ".gocaliper.yaml"), []byte(yaml), 0o644); err != nil {
+	pxfData := `severity = { test_rule: "error" }`
+	if err := os.WriteFile(filepath.Join(parent, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -120,9 +117,9 @@ func TestRuleEnabled_NoConfig(t *testing.T) {
 }
 
 func TestRuleEnabled_EmptyLists(t *testing.T) {
-	cfg := &Config{}
+	cfg := &Config{pb: nil}
 	if !cfg.RuleEnabled("anything") {
-		t.Error("empty enable/disable should enable all rules")
+		t.Error("empty config should enable all rules")
 	}
 }
 
@@ -132,53 +129,14 @@ func TestGCLPatterns_Glob(t *testing.T) {
 	if err := os.MkdirAll(patternsDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// Create two .gcl files.
 	for _, name := range []string{"a.gcl", "b.gcl"} {
 		if err := os.WriteFile(filepath.Join(patternsDir, name), []byte("test"), 0o644); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	cfg := &Config{
-		Patterns: []string{"patterns/*.gcl"},
-	}
-	files := cfg.GCLPatterns(dir)
-	if len(files) != 2 {
-		t.Errorf("GCLPatterns = %d files, want 2: %v", len(files), files)
-	}
-}
-
-func TestGCLPatterns_Empty(t *testing.T) {
-	cfg := &Config{}
-	files := cfg.GCLPatterns("/tmp")
-	if len(files) != 0 {
-		t.Errorf("expected empty, got %v", files)
-	}
-}
-
-func TestGCLPatterns_NilConfig(t *testing.T) {
-	var cfg *Config
-	files := cfg.GCLPatterns("/tmp")
-	if len(files) != 0 {
-		t.Errorf("expected empty, got %v", files)
-	}
-}
-
-func TestGCLPatterns_ConfigFile(t *testing.T) {
-	dir := t.TempDir()
-	patternsDir := filepath.Join(dir, "rules")
-	if err := os.MkdirAll(patternsDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(patternsDir, "test.gcl"), []byte("test"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	yaml := `
-patterns:
-  - "rules/*.gcl"
-`
-	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.yaml"), []byte(yaml), 0o644); err != nil {
+	pxfData := `patterns = ["patterns/*.gcl"]`
+	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -187,7 +145,15 @@ patterns:
 		t.Fatal(err)
 	}
 	files := cfg.GCLPatterns(dir)
-	if len(files) != 1 {
-		t.Errorf("GCLPatterns = %d files, want 1: %v", len(files), files)
+	if len(files) != 2 {
+		t.Errorf("GCLPatterns = %d files, want 2: %v", len(files), files)
+	}
+}
+
+func TestGCLPatterns_NilConfig(t *testing.T) {
+	var cfg *Config
+	files := cfg.GCLPatterns("/tmp")
+	if len(files) != 0 {
+		t.Errorf("expected empty, got %v", files)
 	}
 }

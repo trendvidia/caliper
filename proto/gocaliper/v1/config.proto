@@ -1,0 +1,51 @@
+syntax = "proto3";
+
+package gocaliper.v1;
+
+option go_package = "github.com/trendvidia/gocaliper/pkg/gocaliperpb";
+
+// Config is the top-level GoCaliper configuration.
+message Config {
+  // Severity overrides per rule kind (e.g., "resource_leak": "error").
+  map<string, string> severity = 1;
+
+  // Rules controls which analysis rules are enabled or disabled.
+  RulesConfig rules = 2;
+
+  // Engine configures package loading behavior.
+  EngineConfig engine = 3;
+
+  // Defaults sets default parameter values for tool calls.
+  DefaultsConfig defaults = 4;
+
+  // Patterns lists paths to .gcl pattern files. Supports globs.
+  repeated string patterns = 5;
+}
+
+// RulesConfig controls which rules are active.
+message RulesConfig {
+  // If non-empty, only these rules are active.
+  repeated string enable = 1;
+  // Rules to skip. Applied after enable.
+  repeated string disable = 2;
+}
+
+// EngineConfig controls package loading.
+message EngineConfig {
+  // Skip files with "// Code generated" headers. Default: true.
+  bool skip_generated = 1;
+  // Skip files that import "C". Default: true.
+  bool skip_cgo = 2;
+  // Build tags for package loading.
+  repeated string build_tags = 3;
+  // LRU engine cache size. Default: 8.
+  int32 max_cache_entries = 4;
+}
+
+// DefaultsConfig provides default values for tool parameters.
+message DefaultsConfig {
+  // Default analysis path if none is specified.
+  string path = 1;
+  // Whether transforms default to preview mode. Default: true.
+  bool preview = 2;
+}

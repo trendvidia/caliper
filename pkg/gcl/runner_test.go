@@ -45,13 +45,14 @@ func noprint() {
 	})
 
 	data := []byte(`
-version: 1
-name: "simple"
-rules:
-  - name: "find-println"
-    severity: "info"
-    match: "fmt.Println($args...)"
-    message: "Found Println"
+version = 1
+name = "simple"
+rules = [{
+  name = "find-println"
+  severity = "info"
+  match = "fmt.Println($args...)"
+  message = "Found Println"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -88,19 +89,19 @@ func noClose() {
 	})
 
 	data := []byte(`
-version: 1
-name: "absence"
-patterns:
-  open:
-    pattern: "$x.Open()"
-  close:
-    pattern: "$x.Close()"
-rules:
-  - name: "missing-close"
-    severity: "warning"
-    match: "@open"
-    absent: "@close"
-    message: "Open without Close"
+version = 1
+name = "absence"
+patterns = {
+  open: { pattern = "$x.Open()" }
+  close: { pattern = "$x.Close()" }
+}
+rules = [{
+  name = "missing-close"
+  severity = "warning"
+  match = "@open"
+  absent = "@close"
+  message = "Open without Close"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -115,7 +116,6 @@ rules:
 		t.Fatalf("findings = %d, want 1", len(results[0].Findings))
 	}
 
-	// The finding should be for noClose, not hasClose.
 	finding := results[0].Findings[0]
 	if finding.Severity != "warning" {
 		t.Errorf("severity = %q", finding.Severity)
@@ -135,17 +135,17 @@ func properlyClosing() {
 	})
 
 	data := []byte(`
-version: 1
-name: "absence"
-patterns:
-  open:
-    pattern: "$x.Open()"
-  close:
-    pattern: "$x.Close()"
-rules:
-  - name: "missing-close"
-    match: "@open"
-    absent: "@close"
+version = 1
+name = "absence"
+patterns = {
+  open: { pattern = "$x.Open()" }
+  close: { pattern = "$x.Close()" }
+}
+rules = [{
+  name = "missing-close"
+  match = "@open"
+  absent = "@close"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -176,13 +176,14 @@ func doesNotUseBackground() {
 	})
 
 	data := []byte(`
-version: 1
-name: "contains"
-rules:
-  - name: "open-with-background"
-    match: "$x.Open()"
-    contains: "$x.Background()"
-    message: "Open with Background in same function"
+version = 1
+name = "contains"
+rules = [{
+  name = "open-with-background"
+  match = "$x.Open()"
+  contains = "$x.Background()"
+  message = "Open with Background in same function"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -213,20 +214,18 @@ func example() {
 	})
 
 	data := []byte(`
-version: 1
-name: "multi"
-rules:
-  - name: "rule-a"
-    match: "fmt.Println($args...)"
-  - name: "rule-b"
-    match: "$x := 1"
+version = 1
+name = "multi"
+rules = [
+  { name = "rule-a"  match = "fmt.Println($args...)" }
+  { name = "rule-b"  match = "$x := 1" }
+]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	// Run all rules.
 	results := Run(loaded, engine)
 	totalFindings := 0
 	for _, r := range results {
@@ -248,12 +247,13 @@ func example() { fmt.Println("x") }
 	})
 
 	data := []byte(`
-version: 1
-name: "severity"
-rules:
-  - name: "error-level"
-    severity: "error"
-    match: "fmt.Println($args...)"
+version = 1
+name = "severity"
+rules = [{
+  name = "error-level"
+  severity = "error"
+  match = "fmt.Println($args...)"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {

@@ -12,11 +12,11 @@ func TestLoad_SimpleGCL(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if loaded.File.Name != "simple" {
-		t.Errorf("name = %q, want simple", loaded.File.Name)
+	if loaded.Proto.Name != "simple" {
+		t.Errorf("name = %q, want simple", loaded.Proto.Name)
 	}
-	if loaded.File.Version != 1 {
-		t.Errorf("version = %d, want 1", loaded.File.Version)
+	if loaded.Proto.Version != 1 {
+		t.Errorf("version = %d, want 1", loaded.Proto.Version)
 	}
 	if len(loaded.Rules) != 1 {
 		t.Fatalf("rules = %d, want 1", len(loaded.Rules))
@@ -36,8 +36,8 @@ func TestLoad_ResourceSafetyGCL(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 
-	if loaded.File.Name != "resource-safety" {
-		t.Errorf("name = %q", loaded.File.Name)
+	if loaded.Proto.Name != "resource-safety" {
+		t.Errorf("name = %q", loaded.Proto.Name)
 	}
 	if loaded.Patterns.Len() != 2 {
 		t.Errorf("patterns = %d, want 2", loaded.Patterns.Len())
@@ -61,20 +61,18 @@ func TestLoad_ResourceSafetyGCL(t *testing.T) {
 	}
 }
 
-func TestLoadBytes_InvalidYAML(t *testing.T) {
+func TestLoadBytes_InvalidPXF(t *testing.T) {
 	_, err := LoadBytes([]byte("{{invalid"), "test.gcl")
 	if err == nil {
-		t.Error("expected error for invalid YAML")
+		t.Error("expected error for invalid PXF")
 	}
 }
 
 func TestLoadBytes_UnsupportedVersion(t *testing.T) {
 	data := []byte(`
-version: 99
-name: "test"
-rules:
-  - name: "r1"
-    match: "$x"
+version = 99
+name = "test"
+rules = [{ name = "r1", match = "$x" }]
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {
@@ -84,10 +82,8 @@ rules:
 
 func TestLoadBytes_MissingName(t *testing.T) {
 	data := []byte(`
-version: 1
-rules:
-  - name: "r1"
-    match: "$x"
+version = 1
+rules = [{ name = "r1", match = "$x" }]
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {
@@ -97,9 +93,8 @@ rules:
 
 func TestLoadBytes_NoRules(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "empty"
-rules: []
+version = 1
+name = "empty"
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {
@@ -109,11 +104,9 @@ rules: []
 
 func TestLoadBytes_UnknownPatternRef(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "bad-ref"
-rules:
-  - name: "r1"
-    match: "@nonexistent"
+version = 1
+name = "bad-ref"
+rules = [{ name = "r1", match = "@nonexistent" }]
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {
@@ -123,11 +116,9 @@ rules:
 
 func TestLoadBytes_InvalidInlinePattern(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "bad-pattern"
-rules:
-  - name: "r1"
-    match: "$"
+version = 1
+name = "bad-pattern"
+rules = [{ name = "r1", match = "$" }]
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {
@@ -137,11 +128,9 @@ rules:
 
 func TestLoadBytes_DefaultSeverityAndScope(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "defaults"
-rules:
-  - name: "r1"
-    match: "$x"
+version = 1
+name = "defaults"
+rules = [{ name = "r1"  match = "$x" }]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -157,16 +146,15 @@ rules:
 
 func TestLoadBytes_WithNameConstraints(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "name-constrained"
-patterns:
-  test_call:
-    pattern: "$fn($args...)"
-    name_constraints:
-      fn: "^Test"
-rules:
-  - name: "find-tests"
-    match: "@test_call"
+version = 1
+name = "name-constrained"
+patterns = {
+  test_call: {
+    pattern = "$fn($args...)"
+    name_constraints = { fn: "^Test" }
+  }
+}
+rules = [{ name = "find-tests"  match = "@test_call" }]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -186,13 +174,14 @@ rules:
 
 func TestLoadBytes_ContainsRule(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "contains-test"
-rules:
-  - name: "test-uses-background"
-    match: "$x.Open()"
-    contains: "$x.Background()"
-    message: "Don't use context.Background()"
+version = 1
+name = "contains-test"
+rules = [{
+  name = "test-uses-background"
+  match = "$x.Open()"
+  contains = "$x.Background()"
+  message = "Don't use context.Background()"
+}]
 `)
 	loaded, err := LoadBytes(data, "test.gcl")
 	if err != nil {
@@ -209,16 +198,15 @@ rules:
 
 func TestLoadBytes_InvalidNamedPatternRegex(t *testing.T) {
 	data := []byte(`
-version: 1
-name: "bad-regex"
-patterns:
-  bad:
-    pattern: "$x"
-    name_constraints:
-      x: "[invalid"
-rules:
-  - name: "r1"
-    match: "@bad"
+version = 1
+name = "bad-regex"
+patterns = {
+  bad: {
+    pattern = "$x"
+    name_constraints = { x: "[invalid" }
+  }
+}
+rules = [{ name = "r1", match = "@bad" }]
 `)
 	_, err := LoadBytes(data, "test.gcl")
 	if err == nil {

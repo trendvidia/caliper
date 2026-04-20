@@ -1,0 +1,65 @@
+syntax = "proto3";
+
+package gocaliper.v1;
+
+option go_package = "github.com/trendvidia/gocaliper/pkg/gocaliperpb";
+
+// GCLFile represents a .gcl pattern file.
+message GCLFile {
+  // Format version. Must be 1.
+  int32 version = 1;
+
+  // Name of this pattern set.
+  string name = 2;
+
+  // Human-readable description.
+  string description = 3;
+
+  // Named patterns, keyed by pattern name.
+  map<string, Pattern> patterns = 4;
+
+  // Rules that compose patterns into checks.
+  repeated Rule rules = 5;
+}
+
+// Pattern defines a named pattern with optional constraints.
+message Pattern {
+  // Go code pattern with metavariables ($x, $_, $x..., ...).
+  string pattern = 1;
+
+  // Type constraints: metavar name -> Go type string.
+  map<string, string> type_constraints = 2;
+
+  // Name constraints: metavar name -> regex for identifier names.
+  map<string, string> name_constraints = 3;
+
+  // Human-readable description.
+  string description = 4;
+}
+
+// Rule defines a check that uses patterns to find code issues.
+message Rule {
+  // Unique rule name.
+  string name = 1;
+
+  // Human-readable description.
+  string description = 2;
+
+  // Severity level: "error", "warning", "info".
+  string severity = 3;
+
+  // Match pattern (inline string or @reference to named pattern).
+  string match = 4;
+
+  // Absent pattern — must NOT appear in scope for rule to fire.
+  string absent = 5;
+
+  // Contains pattern — MUST appear in scope for rule to fire.
+  string contains = 6;
+
+  // Scope for absence/contains checks: "function" (default), "file", "block".
+  string scope = 7;
+
+  // Message template for findings. Supports $varname substitution.
+  string message = 8;
+}

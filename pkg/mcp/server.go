@@ -49,8 +49,8 @@ func NewServer() (*Server, error) {
 	}
 
 	cacheSize := defaultMaxCacheEntries
-	if cfg.Engine.MaxCacheEntries > 0 {
-		cacheSize = cfg.Engine.MaxCacheEntries
+	if cfg.MaxCacheEntries() > 0 {
+		cacheSize = cfg.MaxCacheEntries()
 	}
 
 	s := &Server{
@@ -133,7 +133,7 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 	opts := analysis.EngineOptions{
 		SkipGenerated: s.cfg.SkipGenerated(),
 		SkipCgo:       s.cfg.SkipCgo(),
-		BuildTags:     s.cfg.Engine.BuildTags,
+		BuildTags:     s.cfg.BuildTags(),
 	}
 	eng, err := analysis.NewEngineWithOptions(absPath, opts)
 	if err != nil {
@@ -1286,7 +1286,7 @@ func typeStringMatches(t types.Type, fullName, baseName string) bool {
 
 // applySeverityOverrides applies configured severity overrides to findings.
 func (s *Server) applySeverityOverrides(findings []templates.Finding) []templates.Finding {
-	if s.cfg == nil || len(s.cfg.Severity) == 0 {
+	if s.cfg == nil {
 		return findings
 	}
 	for i := range findings {
