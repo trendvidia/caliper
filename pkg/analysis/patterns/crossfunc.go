@@ -1,4 +1,4 @@
-// Cross-function metavariable binding for GoCaliper.
+// Cross-function metavariable binding for Caliper.
 //
 // This implements Coccinelle's rule chaining across files: match a function
 // definition with one pattern, then match all its call sites with another
@@ -12,7 +12,7 @@ import (
 	"go/ast"
 	"go/types"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 )

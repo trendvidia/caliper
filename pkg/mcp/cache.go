@@ -6,7 +6,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 const defaultMaxCacheEntries = 8

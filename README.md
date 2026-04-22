@@ -1,28 +1,28 @@
-# GoCaliper
+# Caliper
 
-Semantic code analysis and transformation tool for Go, inspired by [Coccinelle](https://coccinelle.lip6.fr/). GoCaliper runs as an [MCP](https://modelcontextprotocol.io/) server, exposing AST-level pattern matching, control flow analysis, and code transformation to LLM-powered tools.
+Semantic code analysis and transformation tool for Go, inspired by [Coccinelle](https://coccinelle.lip6.fr/). Caliper runs as an [MCP](https://modelcontextprotocol.io/) server, exposing AST-level pattern matching, control flow analysis, and code transformation to LLM-powered tools.
 
 ## Install
 
 ```bash
-brew install trendvidia/tap/gocaliper --head
+brew install trendvidia/tap/caliper --head
 ```
 
 Or build from source:
 
 ```bash
-go install github.com/trendvidia/gocaliper/cmd/gocaliper-mcp@latest
+go install github.com/trendvidia/caliper/cmd/caliper-mcp@latest
 ```
 
 ## Claude Code MCP Configuration
 
-Add GoCaliper to your Claude Code settings (`~/.claude/settings.json`):
+Add Caliper to your Claude Code settings (`~/.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
-    "gocaliper": {
-      "command": "gocaliper",
+    "caliper": {
+      "command": "caliper",
       "args": []
     }
   }
@@ -36,8 +36,8 @@ If you installed via `go install` instead of Homebrew, use the full path:
 ```json
 {
   "mcpServers": {
-    "gocaliper": {
-      "command": "/path/to/go/bin/gocaliper-mcp",
+    "caliper": {
+      "command": "/path/to/go/bin/caliper-mcp",
       "args": []
     }
   }
@@ -46,7 +46,7 @@ If you installed via `go install` instead of Homebrew, use the full path:
 
 ## Tools
 
-GoCaliper exposes the following MCP tools:
+Caliper exposes the following MCP tools:
 
 **Pattern Matching**
 - `find_pattern` — match code using AST patterns with metavariables
@@ -81,7 +81,7 @@ GoCaliper exposes the following MCP tools:
 
 ## LLM-Effective Usage
 
-GoCaliper's MCP tools are designed so that an LLM never writes formal logic — each tool encapsulates the formal reasoning (CTL model checking, path quantifiers, CFG traversal) behind an intent-based interface.
+Caliper's MCP tools are designed so that an LLM never writes formal logic — each tool encapsulates the formal reasoning (CTL model checking, path quantifiers, CFG traversal) behind an intent-based interface.
 
 ### What works well via LLM
 
@@ -132,7 +132,7 @@ Given a policy document (e.g., `POLICIES.md`) and access to the codebase via MCP
 
 4. **Validate the rules** — use `run_patterns` to test against the codebase, check for false positives, refine patterns
 
-5. **Generate CI configuration** — produce `.gocaliper.pxf` config, GitHub Actions workflow, or other CI gate setup
+5. **Generate CI configuration** — produce `.caliper.pxf` config, GitHub Actions workflow, or other CI gate setup
 
 This workflow means:
 - **Policy authors** write natural language (in a wiki, RFC, or markdown file)
@@ -149,9 +149,9 @@ LLM reads policies + explores codebase (via MCP tools)
     ↓
 patterns/*.gcl (LLM-generated, human-reviewed)
     ↓
-.gocaliper.pxf (points to pattern files)
+.caliper.pxf (points to pattern files)
     ↓
-CI: gocaliper check --diff (runs on every PR)
+CI: caliper check --diff (runs on every PR)
     ↓
 SARIF → GitHub Code Scanning (findings in PR review)
 ```
@@ -160,7 +160,7 @@ The LLM acts as a bridge between human intent and machine enforcement. It only n
 
 ## Configuration
 
-GoCaliper uses PXF format (protowire) for configuration. Create `.gocaliper.pxf` in your project root:
+Caliper uses PXF format (protowire) for configuration. Create `.caliper.pxf` in your project root:
 
 ```
 severity = {

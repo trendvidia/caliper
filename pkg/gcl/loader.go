@@ -12,8 +12,8 @@ import (
 
 	"github.com/trendvidia/protowire/encoding/pxf"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
-	pb "github.com/trendvidia/gocaliper/pkg/gocaliperpb"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
+	pb "github.com/trendvidia/caliper/pkg/caliperpb"
 )
 
 // ResolvedRule is a rule with all pattern references resolved to compiled patterns.

@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 // setupTaintProject creates a temp Go project and returns an Engine and

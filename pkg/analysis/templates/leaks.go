@@ -5,8 +5,8 @@ import (
 	"go/ast"
 	"strings"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
 )
 
 // ResourceLeak detects resources that are acquired but not released on

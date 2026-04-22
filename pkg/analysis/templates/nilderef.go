@@ -5,9 +5,9 @@ import (
 	"go/ast"
 	"go/types"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
 )
 
 // NilDeref detects potential nil pointer dereferences by checking that

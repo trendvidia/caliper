@@ -4,7 +4,7 @@ import (
 	"go/ast"
 	"go/types"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 // NegativePattern wraps a positive pattern and checks for its absence

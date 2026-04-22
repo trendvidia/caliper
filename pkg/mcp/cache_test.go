@@ -3,7 +3,7 @@ package mcp
 import (
 	"testing"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 func TestEngineCache_PutAndGet(t *testing.T) {

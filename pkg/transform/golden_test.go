@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 // setupTransformProject creates a temp Go project with the given source and

@@ -1,10 +1,10 @@
 syntax = "proto3";
 
-package gocaliper.v1;
+package caliper.v1;
 
-option go_package = "github.com/trendvidia/gocaliper/pkg/gocaliperpb";
+option go_package = "github.com/trendvidia/caliper/pkg/caliperpb";
 
-// Config is the top-level GoCaliper configuration.
+// Config is the top-level Caliper configuration.
 message Config {
   // Severity overrides per rule kind (e.g., "resource_leak": "error").
   map<string, string> severity = 1;

@@ -1,7 +1,7 @@
 // Package templates provides pre-built analysis templates that encapsulate
 // complex control-flow properties behind simple, parameterized interfaces.
 //
-// This is how GoCaliper hides CTL complexity from the LLM. Each template
+// This is how Caliper hides CTL complexity from the LLM. Each template
 // knows which path quantifier to use, how to build predicates, and how to
 // format results. The MCP tools call these directly.
 package templates
@@ -11,9 +11,9 @@ import (
 	"runtime"
 	"sync"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
 )
 
 // Finding represents a single issue found by a template.

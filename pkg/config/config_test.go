@@ -44,7 +44,7 @@ defaults {
   preview = false
 }
 `
-	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".caliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -95,7 +95,7 @@ func TestLoad_ParentDirectory(t *testing.T) {
 	}
 
 	pxfData := `severity = { test_rule: "error" }`
-	if err := os.WriteFile(filepath.Join(parent, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(parent, ".caliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -136,7 +136,7 @@ func TestGCLPatterns_Glob(t *testing.T) {
 	}
 
 	pxfData := `patterns = ["patterns/*.gcl"]`
-	if err := os.WriteFile(filepath.Join(dir, ".gocaliper.pxf"), []byte(pxfData), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".caliper.pxf"), []byte(pxfData), 0o644); err != nil {
 		t.Fatal(err)
 	}
 

@@ -7,9 +7,9 @@ import (
 
 	"golang.org/x/tools/go/packages"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
-	"github.com/trendvidia/gocaliper/pkg/analysis/templates"
+	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis/templates"
 )
 
 // RuleResult holds findings from running a single rule.

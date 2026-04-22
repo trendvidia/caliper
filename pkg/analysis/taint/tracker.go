@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/tools/go/ssa"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 // --------------------------------------------------------------------------

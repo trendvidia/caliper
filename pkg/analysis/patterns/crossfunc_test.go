@@ -5,7 +5,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
 func setupCrossFuncProject(t *testing.T, files map[string]string) (*analysis.Engine, *analysis.InterProceduralContext) {

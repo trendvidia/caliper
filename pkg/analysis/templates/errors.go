@@ -5,7 +5,7 @@ import (
 	"go/ast"
 	"go/types"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 )
 
 // UncheckedError finds function calls that return an error which is

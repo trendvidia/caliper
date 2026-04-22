@@ -1,4 +1,4 @@
-module github.com/trendvidia/gocaliper
+module github.com/trendvidia/caliper
 
 go 1.26.1
 

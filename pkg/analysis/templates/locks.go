@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"go/ast"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 )
 
 // LockViolation detects mutex discipline violations:

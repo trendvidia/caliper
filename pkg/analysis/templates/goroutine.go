@@ -5,7 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 )
 
 // GoroutineLeak detects goroutines that may never terminate because

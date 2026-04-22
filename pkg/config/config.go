@@ -1,4 +1,4 @@
-// Package config handles loading and applying .gocaliper.pxf configuration.
+// Package config handles loading and applying .caliper.pxf configuration.
 //
 // The config file lets users customize severity levels, enable/disable
 // specific analysis rules, set default paths, and configure engine options
@@ -12,7 +12,7 @@ import (
 
 	"github.com/trendvidia/protowire/encoding/pxf"
 
-	pb "github.com/trendvidia/gocaliper/pkg/gocaliperpb"
+	pb "github.com/trendvidia/caliper/pkg/caliperpb"
 )
 
 // Config wraps the protobuf config message with convenience methods.
@@ -20,7 +20,7 @@ type Config struct {
 	pb *pb.Config
 }
 
-// Load reads .gocaliper.pxf from the given directory or any parent
+// Load reads .caliper.pxf from the given directory or any parent
 // directory, returning a zero Config if no file is found.
 func Load(dir string) (*Config, error) {
 	path := findConfigFile(dir)
@@ -40,7 +40,7 @@ func Load(dir string) (*Config, error) {
 	return &Config{pb: &msg}, nil
 }
 
-// findConfigFile walks up from dir looking for .gocaliper.pxf.
+// findConfigFile walks up from dir looking for .caliper.pxf.
 func findConfigFile(dir string) string {
 	dir, err := filepath.Abs(dir)
 	if err != nil {
@@ -48,7 +48,7 @@ func findConfigFile(dir string) string {
 	}
 
 	for {
-		path := filepath.Join(dir, ".gocaliper.pxf")
+		path := filepath.Join(dir, ".caliper.pxf")
 		if _, err := os.Stat(path); err == nil {
 			return path
 		}

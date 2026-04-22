@@ -19,9 +19,9 @@ import (
 	"golang.org/x/tools/go/ast/astutil"
 	"golang.org/x/tools/imports"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
-	"github.com/trendvidia/gocaliper/pkg/analysis/templates"
+	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis/templates"
 )
 
 // Change describes a single transformation applied to a file.

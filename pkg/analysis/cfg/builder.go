@@ -1,5 +1,5 @@
 // Package cfg builds control flow graphs from Go functions and provides
-// path-level analysis primitives — the engine behind GoCaliper's
+// path-level analysis primitives — the engine behind Caliper's
 // control-flow-aware tools.
 //
 // This is the Go equivalent of Coccinelle's CTL engine. Instead of

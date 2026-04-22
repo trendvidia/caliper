@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
 )
 
 func nodeToString(node ast.Node) string {

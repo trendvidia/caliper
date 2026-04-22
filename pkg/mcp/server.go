@@ -1,4 +1,4 @@
-// Package mcp implements the MCP server for GoCaliper.
+// Package mcp implements the MCP server for Caliper.
 //
 // It registers all tools and routes incoming requests to the appropriate
 // analysis engine, template, or transformation. The server runs over
@@ -21,18 +21,18 @@ import (
 	mcpserver "github.com/mark3labs/mcp-go/server"
 	"golang.org/x/tools/go/packages"
 
-	"github.com/trendvidia/gocaliper/pkg/analysis"
-	"github.com/trendvidia/gocaliper/pkg/analysis/cfg"
-	"github.com/trendvidia/gocaliper/pkg/analysis/patterns"
-	"github.com/trendvidia/gocaliper/pkg/gcl"
-	"github.com/trendvidia/gocaliper/pkg/analysis/taint"
-	"github.com/trendvidia/gocaliper/pkg/analysis/templates"
-	"github.com/trendvidia/gocaliper/pkg/config"
-	"github.com/trendvidia/gocaliper/pkg/iso"
-	"github.com/trendvidia/gocaliper/pkg/transform"
+	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
+	"github.com/trendvidia/caliper/pkg/analysis/patterns"
+	"github.com/trendvidia/caliper/pkg/gcl"
+	"github.com/trendvidia/caliper/pkg/analysis/taint"
+	"github.com/trendvidia/caliper/pkg/analysis/templates"
+	"github.com/trendvidia/caliper/pkg/config"
+	"github.com/trendvidia/caliper/pkg/iso"
+	"github.com/trendvidia/caliper/pkg/transform"
 )
 
-// Server is the GoCaliper MCP server.
+// Server is the Caliper MCP server.
 type Server struct {
 	mcp   *mcpserver.MCPServer
 	iso   *iso.Registry
@@ -41,7 +41,7 @@ type Server struct {
 }
 
 // NewServer creates and configures the MCP server with all tools.
-// It loads .gocaliper.yaml from the current working directory (or parents).
+// It loads .caliper.yaml from the current working directory (or parents).
 func NewServer() (*Server, error) {
 	cfg, err := config.Load(".")
 	if err != nil {
@@ -60,7 +60,7 @@ func NewServer() (*Server, error) {
 	}
 
 	s.mcp = mcpserver.NewMCPServer(
-		"GoCaliper",
+		"Caliper",
 		"0.1.0",
 		mcpserver.WithToolCapabilities(true),
 	)
@@ -905,7 +905,7 @@ func (s *Server) handleRunPatterns(ctx context.Context, req mcpsdk.CallToolReque
 	}
 
 	if len(gclPaths) == 0 {
-		return errorResult("No .gcl files specified. Provide gcl_file parameter or configure patterns in .gocaliper.yaml."), nil
+		return errorResult("No .gcl files specified. Provide gcl_file parameter or configure patterns in .caliper.yaml."), nil
 	}
 
 	var allFindings []map[string]any

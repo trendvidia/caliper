@@ -1,6 +1,6 @@
 package mcp
 
-// This file defines every MCP tool that GoCaliper exposes.
+// This file defines every MCP tool that Caliper exposes.
 //
 // Design principle: the LLM never writes formal logic (CTL, path quantifiers).
 // Instead, each tool encapsulates the formal reasoning and exposes an
@@ -782,7 +782,7 @@ and rules that compose them. Rules can:
   - Check that a pattern appears within the same scope as another
 
 GCL files can be specified directly by path or auto-discovered from
-.gocaliper.yaml (patterns: [...]).
+.caliper.yaml (patterns: [...]).
 
 USE THIS TOOL WHEN: you want to run pre-defined pattern rules from a .gcl
 file, check a codebase against a reusable rule set, or apply custom
@@ -792,7 +792,7 @@ organization-specific code policies.`,
 		Properties: map[string]any{
 			"gcl_file": map[string]any{
 				"type":        "string",
-				"description": "Path to a .gcl file. If omitted, runs all .gcl files from .gocaliper.yaml patterns list.",
+				"description": "Path to a .gcl file. If omitted, runs all .gcl files from .caliper.yaml patterns list.",
 			},
 			"path": map[string]any{
 				"type":        "string",

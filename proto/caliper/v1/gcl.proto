@@ -1,8 +1,8 @@
 syntax = "proto3";
 
-package gocaliper.v1;
+package caliper.v1;
 
-option go_package = "github.com/trendvidia/gocaliper/pkg/gocaliperpb";
+option go_package = "github.com/trendvidia/caliper/pkg/caliperpb";
 
 // GCLFile represents a .gcl pattern file.
 message GCLFile {

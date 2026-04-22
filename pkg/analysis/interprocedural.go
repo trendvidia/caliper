@@ -1,4 +1,4 @@
-// Inter-procedural analysis context for GoCaliper.
+// Inter-procedural analysis context for Caliper.
 //
 // This file provides the call graph infrastructure needed for cross-function
 // analysis: taint tracking, call-site matching, and rule chaining. The

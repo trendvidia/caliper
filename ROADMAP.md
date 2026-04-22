@@ -1,4 +1,4 @@
-# GoCaliper Roadmap
+# Caliper Roadmap
 
 ## Phase 1 — Complete Core Engine ✓
 
@@ -79,7 +79,7 @@
 - [x] Structured diff output — return unified diffs that LLMs can review before applying
 - [x] Progress notifications for large codebases (MCP progress tokens)
 - [x] Caching — reuse parsed packages across tool calls within a session
-- [x] Configurable severity levels and rule sets via `.gocaliper.yaml`
+- [x] Configurable severity levels and rule sets via `.caliper.yaml`
 
 ### Pattern Language
 - [x] Pattern file format (`.gcl`) for reusable, shareable patterns
@@ -91,11 +91,11 @@
 - [x] Homebrew formula
 - [ ] Docker image for CI usage
 - [x] Claude Code MCP config snippet (`claude_desktop_config.json` example)
-- [ ] VS Code extension that runs GoCaliper as an MCP server
+- [ ] VS Code extension that runs Caliper as an MCP server
 
 ## Phase 6 — Coccinelle Parity
 
-The features below close the remaining gap between GoCaliper and what Coccinelle provides for C/Linux kernel refactoring. They transform GoCaliper from a pattern-finder into a full semantic patch engine for Go.
+The features below close the remaining gap between Caliper and what Coccinelle provides for C/Linux kernel refactoring. They transform Caliper from a pattern-finder into a full semantic patch engine for Go.
 
 ### CFG-Aware Pattern Matching (the `...` that understands control flow)
 
@@ -150,7 +150,7 @@ The `.gcl` format handles find-and-report. SmPL-style semantic patches handle la
 
 ### Metavariable System
 
-GoCaliper's metavariables are untyped (match anything). Coccinelle's are typed (identifier, expression, statement, type, constant, etc.), which prevents false positives.
+Caliper's metavariables are untyped (match anything). Coccinelle's are typed (identifier, expression, statement, type, constant, etc.), which prevents false positives.
 
 - [ ] Typed metavariable declarations — `identifier $fn;`, `expression $e;`, `statement $s;`, `type $T;`, `constant $c;`
 - [ ] `idexpression` — metavariable that only matches simple identifiers (not complex expressions), the most common case in Coccinelle
@@ -161,7 +161,7 @@ GoCaliper's metavariables are untyped (match anything). Coccinelle's are typed (
 
 ### Script Rules (powered by GoVM)
 
-Coccinelle uses Python/OCaml scripts for logic too complex for patterns. GoCaliper uses GoVM (`github.com/trendvidia/govm`) — a full Go interpreter with JIT, bytecode caching, and sandboxing — so script rules are written in real Go, not a foreign DSL.
+Coccinelle uses Python/OCaml scripts for logic too complex for patterns. Caliper uses GoVM (`github.com/trendvidia/govm`) — a full Go interpreter with JIT, bytecode caching, and sandboxing — so script rules are written in real Go, not a foreign DSL.
 
 - [ ] Script filter predicates using GoVM's `eval` package — compile-once/eval-many for high-throughput filtering:
   ```
@@ -193,16 +193,16 @@ Coccinelle uses Python/OCaml scripts for logic too complex for patterns. GoCalip
 
 ### Batch CLI Mode
 
-Coccinelle's `spatch` is a CLI tool that processes entire kernel trees. GoCaliper needs an equivalent for CI pipelines and large-scale refactoring campaigns.
+Coccinelle's `spatch` is a CLI tool that processes entire kernel trees. Caliper needs an equivalent for CI pipelines and large-scale refactoring campaigns.
 
-- [ ] `gocaliper run` CLI command — run `.gcl`/`.gsp` files against a codebase, output findings to stdout
-- [ ] `gocaliper patch` CLI command — apply `.gsp` semantic patches, write modified files or output unified diffs
-- [ ] `gocaliper check` CLI command — exit non-zero if any findings (for CI gates)
+- [ ] `caliper run` CLI command — run `.gcl`/`.gsp` files against a codebase, output findings to stdout
+- [ ] `caliper patch` CLI command — apply `.gsp` semantic patches, write modified files or output unified diffs
+- [ ] `caliper check` CLI command — exit non-zero if any findings (for CI gates)
 - [ ] SARIF output format — standard static analysis format for GitHub Code Scanning / VS Code integration
 - [ ] Parallel file processing — process packages concurrently with worker pool (already have `parmap`-style infra in engine)
 - [ ] `--include`/`--exclude` glob filters for targeting specific files/packages
 - [ ] `--diff` mode — only analyze files changed in a git diff (PR-scoped analysis)
-- [ ] Configuration via `.gocaliper.pxf` `patterns:` to auto-discover `.gcl`/`.gsp` files
+- [ ] Configuration via `.caliper.pxf` `patterns:` to auto-discover `.gcl`/`.gsp` files
 
 ### LLM-Driven Policy Enforcement
 
@@ -213,16 +213,16 @@ The most powerful workflow: humans write policy documents in natural language, t
   - Explores codebase via `find_pattern`/`find_type_usage` to learn conventions
   - Generates `.gcl` rules encoding each policy item
   - Validates rules via `run_patterns`, reports false positive rate
-  - Outputs ready-to-commit `.gcl` file + suggested `.gocaliper.pxf` config
+  - Outputs ready-to-commit `.gcl` file + suggested `.caliper.pxf` config
 - [ ] Policy validation loop — iteratively refine generated rules: run against codebase, present findings to user, adjust patterns to reduce false positives
-- [ ] CI config generation — produce GitHub Actions / GitLab CI snippets that run `gocaliper check` on PRs
+- [ ] CI config generation — produce GitHub Actions / GitLab CI snippets that run `caliper check` on PRs
 - [ ] Policy drift detection — re-run policy→rules translation periodically, diff against committed rules, flag policies that have drifted from enforcement
 - [ ] POLICIES.md convention — standard location and format for policy documents that the tool can discover and process
-- [ ] Multi-repo policy distribution — generate rules once, publish to a shared pattern library, consume across repos via `.gocaliper.pxf` remote patterns
+- [ ] Multi-repo policy distribution — generate rules once, publish to a shared pattern library, consume across repos via `.caliper.pxf` remote patterns
 
 ### Isomorphism Files
 
-Coccinelle loads equivalences from `.iso` files that users can customize. GoCaliper's `pkg/iso` is hardcoded.
+Coccinelle loads equivalences from `.iso` files that users can customize. Caliper's `pkg/iso` is hardcoded.
 
 - [ ] `.iso` file format for user-defined equivalences:
   ```
@@ -232,13 +232,13 @@ Coccinelle loads equivalences from `.iso` files that users can customize. GoCali
   @@
   E == nil => !(E != nil)
   ```
-- [ ] Load `.iso` files from `.gocaliper.pxf` config or `--iso` CLI flag
+- [ ] Load `.iso` files from `.caliper.pxf` config or `--iso` CLI flag
 - [ ] Conditional isomorphisms — only apply in certain contexts (e.g., error-handling isos only in `if err != nil` blocks)
 - [ ] Isomorphism composition — apply multiple `.iso` files, with priority ordering
 
 ### Distribution (remaining)
 
 - [ ] Docker image for CI usage
-- [ ] VS Code extension that runs GoCaliper as an MCP server
-- [ ] `gocaliper init` command — scaffold `.gocaliper.pxf` and example `.gcl` files
+- [ ] VS Code extension that runs Caliper as an MCP server
+- [ ] `caliper init` command — scaffold `.caliper.pxf` and example `.gcl` files
 - [ ] Pattern library repository — community-maintained `.gcl`/`.gsp` files for common Go idioms and migrations
