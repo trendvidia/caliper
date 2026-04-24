@@ -76,12 +76,13 @@ func (s *Server) Run(ctx context.Context) error {
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
-// safeHandler wraps a tool handler with panic recovery so that a crash in
-// one analysis doesn't kill the entire MCP server process.
+// safeHandler wraps a tool handler with panic recovery and logging so that
+// a crash in one analysis doesn't kill the entire MCP server process.
 func safeHandler(fn mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 	return func(ctx context.Context, req mcpsdk.CallToolRequest) (result *mcpsdk.CallToolResult, err error) {
 		defer func() {
 			if r := recover(); r != nil {
+				fmt.Fprintf(os.Stderr, "caliper: panic in tool handler: %v\n", r)
 				result = errorResult("internal error: %v", r)
 				err = nil
 			}

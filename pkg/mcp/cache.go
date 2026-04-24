@@ -3,13 +3,14 @@ package mcp
 import (
 	"container/list"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
 )
 
-const defaultMaxCacheEntries = 8
+const defaultMaxCacheEntries = 3
 
 // engineCache is an LRU cache of analysis engines keyed by absolute path.
 // It supports sub-path lookups: if /foo is cached and /foo/bar is requested,
@@ -88,6 +89,8 @@ func (c *engineCache) put(absPath string, engine *analysis.Engine) {
 		if oldest != nil {
 			c.order.Remove(oldest)
 			delete(c.entries, oldest.Value.(*cacheEntry).path)
+			// Nudge GC to reclaim the evicted engine's AST/type data.
+			runtime.GC()
 		}
 	}
 
