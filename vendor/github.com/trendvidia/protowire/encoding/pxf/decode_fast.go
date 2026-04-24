@@ -1,0 +1,925 @@
+package pxf
+
+import (
+	"encoding/base64"
+	"fmt"
+	"strconv"
+	"strings"
+	"time"
+
+	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protoreflect"
+	"google.golang.org/protobuf/types/dynamicpb"
+)
+
+// directDecoder fuses lexing and decoding in a single pass,
+// writing directly into a proto.Message without intermediate AST nodes.
+type directDecoder struct {
+	lex            lexer
+	current        Token
+	resolver       TypeResolver
+	discardUnknown bool
+	result         *Result                      // nil for plain Unmarshal, non-nil for UnmarshalFull
+	rootMsg        protoreflect.Message         // top-level message (for _null FieldMask writes)
+	nullMaskFd     protoreflect.FieldDescriptor // cached _null field, may be nil
+	pathPrefix     string                       // dotted path prefix for nested messages
+}
+
+func (d *directDecoder) advance() {
+	for {
+		d.current = d.lex.Next()
+		if d.current.Kind != COMMENT && d.current.Kind != NEWLINE {
+			return
+		}
+	}
+}
+
+func unmarshalDirect(data []byte, msg protoreflect.Message, resolver TypeResolver, discardUnknown bool) error {
+	var d directDecoder
+	d.lex = lexer{input: data, line: 1, col: 1}
+	d.resolver = resolver
+	d.discardUnknown = discardUnknown
+	d.advance()
+
+	if d.current.Kind == AT_TYPE {
+		d.advance()
+		if d.current.Kind != IDENT {
+			return errorf(d.current.Pos, "expected type name after @type, got %s", d.current.Kind)
+		}
+		d.advance()
+	}
+
+	return d.decodeFields(msg, false)
+}
+
+func unmarshalDirectFull(data []byte, msg protoreflect.Message, resolver TypeResolver, discardUnknown bool) (*Result, error) {
+	var d directDecoder
+	d.lex = lexer{input: data, line: 1, col: 1}
+	d.resolver = resolver
+	d.discardUnknown = discardUnknown
+	d.result = newResult()
+	d.rootMsg = msg
+	d.nullMaskFd = findNullMaskField(msg.Descriptor())
+	d.advance()
+
+	if d.current.Kind == AT_TYPE {
+		d.advance()
+		if d.current.Kind != IDENT {
+			return nil, errorf(d.current.Pos, "expected type name after @type, got %s", d.current.Kind)
+		}
+		d.advance()
+	}
+
+	if err := d.decodeFields(msg, false); err != nil {
+		return nil, err
+	}
+	if err := postDecode(msg, d.result, d.nullMaskFd, ""); err != nil {
+		return nil, err
+	}
+	return d.result, nil
+}
+
+// decodeFields reads key=value / key{} entries into msg.
+// If inBlock, it expects and consumes a closing '}'.
+func (d *directDecoder) decodeFields(msg protoreflect.Message, inBlock bool) error {
+	desc := msg.Descriptor()
+	fields := desc.Fields()
+	var setOneofs map[string]string
+
+	for {
+		if inBlock && d.current.Kind == RBRACE {
+			d.advance()
+			return nil
+		}
+		if d.current.Kind == EOF {
+			if inBlock {
+				return errorf(d.current.Pos, "expected '}', got EOF")
+			}
+			return nil
+		}
+
+		pos := d.current.Pos
+		if d.current.Kind != IDENT && d.current.Kind != STRING && d.current.Kind != INT {
+			return errorf(pos, "expected identifier, string, or integer, got %s (%q)", d.current.Kind, d.current.Value)
+		}
+		key := d.current.Value
+		d.advance()
+
+		switch d.current.Kind {
+		case EQUALS:
+			d.advance()
+			fd := fields.ByName(protoreflect.Name(key))
+			if fd == nil {
+				if d.discardUnknown {
+					d.skipValue()
+					continue
+				}
+				return errorf(pos, "unknown field %q in %s", key, desc.FullName())
+			}
+			if err := checkOneofDirect(fd, &setOneofs, pos); err != nil {
+				return err
+			}
+			if d.current.Kind == NULL {
+				if d.result != nil {
+					path := d.pathPrefix + string(fd.Name())
+					d.result.markNull(path)
+					if d.nullMaskFd != nil {
+						addToNullMask(d.rootMsg, d.nullMaskFd, path)
+					}
+				}
+				d.advance()
+				continue
+			}
+			if d.result != nil {
+				d.result.markPresent(d.pathPrefix + string(fd.Name()))
+			}
+			if err := d.decodeFieldValue(msg, fd); err != nil {
+				return err
+			}
+
+		case LBRACE:
+			d.advance()
+			fd := fields.ByName(protoreflect.Name(key))
+			if fd == nil {
+				if d.discardUnknown {
+					d.skipBraced()
+					continue
+				}
+				return errorf(pos, "unknown field %q in %s", key, desc.FullName())
+			}
+			if fd.Kind() != protoreflect.MessageKind && fd.Kind() != protoreflect.GroupKind {
+				return errorf(pos, "field %q is not a message type, cannot use block syntax", key)
+			}
+			if fd.IsList() {
+				return errorf(pos, "repeated field %q must use list syntax: %s = [...]", key, key)
+			}
+			if fd.IsMap() {
+				return errorf(pos, "map field %q must use assignment syntax: %s = { ... }", key, key)
+			}
+			if err := checkOneofDirect(fd, &setOneofs, pos); err != nil {
+				return err
+			}
+			if d.result != nil {
+				d.result.markPresent(d.pathPrefix + string(fd.Name()))
+			}
+			// Any with block syntax: name { @type = "..." ... }
+			if isAny(fd.Message()) && d.resolver != nil && d.current.Kind == AT_TYPE {
+				if err := d.decodeAnyBlock(msg, fd); err != nil {
+					return err
+				}
+				continue
+			}
+			sub := msg.Mutable(fd).Message()
+			saved := d.pathPrefix
+			d.pathPrefix = d.pathPrefix + string(fd.Name()) + "."
+			if err := d.decodeFields(sub, true); err != nil {
+				return err
+			}
+			d.pathPrefix = saved
+
+		case COLON:
+			return errorf(pos, "unexpected ':' in message context, use '=' for field assignments")
+
+		default:
+			return errorf(d.current.Pos, "expected '=', ':', or '{' after %q, got %s", key, d.current.Kind)
+		}
+	}
+}
+
+func checkOneofDirect(fd protoreflect.FieldDescriptor, setOneofs *map[string]string, pos Position) error {
+	oo := fd.ContainingOneof()
+	if oo == nil || oo.IsSynthetic() {
+		return nil
+	}
+	name := string(oo.Name())
+	if *setOneofs == nil {
+		*setOneofs = make(map[string]string, 2)
+	}
+	if prev, ok := (*setOneofs)[name]; ok {
+		return errorf(pos, "oneof %q: field %q conflicts with already-set field %q", name, fd.Name(), prev)
+	}
+	(*setOneofs)[name] = string(fd.Name())
+	return nil
+}
+
+func (d *directDecoder) decodeFieldValue(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	if fd.IsMap() {
+		return d.decodeMapInline(msg, fd)
+	}
+	if fd.IsList() {
+		return d.decodeListInline(msg, fd)
+	}
+	if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+		return d.decodeMsgValue(msg, fd)
+	}
+	v, err := d.consumeScalar(fd)
+	if err != nil {
+		return err
+	}
+	msg.Set(fd, v)
+	return nil
+}
+
+func (d *directDecoder) decodeMsgValue(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	mdesc := fd.Message()
+
+	if isTimestamp(mdesc) && d.current.Kind == TIMESTAMP {
+		t, err := time.Parse(time.RFC3339Nano, d.current.Value)
+		if err != nil {
+			t, _ = time.Parse(time.RFC3339, d.current.Value)
+		}
+		sub := msg.Mutable(fd).Message()
+		setTimestampFields(sub, t)
+		d.advance()
+		return nil
+	}
+	if isDuration(mdesc) && d.current.Kind == DURATION {
+		dur, _ := time.ParseDuration(d.current.Value)
+		sub := msg.Mutable(fd).Message()
+		setDurationFields(sub, dur)
+		d.advance()
+		return nil
+	}
+	if _, ok := wrapperTypes[mdesc.FullName()]; ok && d.current.Kind != LBRACE {
+		innerFd := mdesc.Fields().ByName("value")
+		v, err := d.consumeScalar(innerFd)
+		if err != nil {
+			return err
+		}
+		sub := msg.Mutable(fd).Message()
+		sub.Set(innerFd, v)
+		return nil
+	}
+	if isBigInt(mdesc) && d.current.Kind == INT {
+		bi, err := parseBigInt(d.current.Value)
+		if err != nil {
+			return errorf(d.current.Pos, "%v", err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setBigIntFields(sub, bi)
+		d.advance()
+		return nil
+	}
+	if isDecimal(mdesc) && (d.current.Kind == INT || d.current.Kind == FLOAT) {
+		unscaled, scale, negative, err := parseDecimal(d.current.Value)
+		if err != nil {
+			return errorf(d.current.Pos, "%v", err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setDecimalFields(sub, unscaled, scale, negative)
+		d.advance()
+		return nil
+	}
+	if isBigFloat(mdesc) && (d.current.Kind == INT || d.current.Kind == FLOAT) {
+		bf, err := parseBigFloat(d.current.Value)
+		if err != nil {
+			return errorf(d.current.Pos, "%v", err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setBigFloatFields(sub, bf)
+		d.advance()
+		return nil
+	}
+	// google.protobuf.Any with sugar syntax
+	if isAny(mdesc) && d.resolver != nil && d.current.Kind == LBRACE {
+		return d.decodeAnyValue(msg, fd)
+	}
+
+	if d.current.Kind != LBRACE {
+		return errorf(d.current.Pos, "expected '{' for message field %q", fd.Name())
+	}
+	d.advance()
+	sub := msg.Mutable(fd).Message()
+	return d.decodeFields(sub, true)
+}
+
+// decodeAnyBlock decodes Any sugar when the opening { has already been consumed
+// (block syntax: `name { @type = "..." ... }`).
+func (d *directDecoder) decodeAnyBlock(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	return d.decodeAnyInner(msg, fd)
+}
+
+// decodeAnyValue decodes Any sugar from assignment syntax: `name = { @type = "..." ... }`.
+func (d *directDecoder) decodeAnyValue(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	d.advance() // consume {
+	return d.decodeAnyInner(msg, fd)
+}
+
+func (d *directDecoder) decodeAnyInner(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	if d.current.Kind != AT_TYPE {
+		return errorf(d.current.Pos, "Any field requires @type as first entry")
+	}
+	d.advance() // consume @type
+	if d.current.Kind != EQUALS {
+		return errorf(d.current.Pos, "expected '=' after @type")
+	}
+	d.advance()
+	if d.current.Kind != STRING {
+		return errorf(d.current.Pos, "expected string type URL after @type =")
+	}
+	typeURL := d.current.Value
+	d.advance()
+
+	innerDesc, err := d.resolver.FindMessageByURL(typeURL)
+	if err != nil {
+		return errorf(d.current.Pos, "cannot resolve Any type %q: %v", typeURL, err)
+	}
+
+	inner := dynamicpb.NewMessage(innerDesc)
+	if err := d.decodeFields(inner.ProtoReflect(), true); err != nil {
+		return err
+	}
+
+	packed, err := proto.Marshal(inner)
+	if err != nil {
+		return fmt.Errorf("cannot marshal Any inner message: %w", err)
+	}
+
+	anyMsg := msg.Mutable(fd).Message()
+	anyDesc := fd.Message()
+	anyMsg.Set(anyDesc.Fields().ByName("type_url"), protoreflect.ValueOfString(typeURL))
+	anyMsg.Set(anyDesc.Fields().ByName("value"), protoreflect.ValueOfBytes(packed))
+	return nil
+}
+
+func (d *directDecoder) decodeListInline(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	if d.current.Kind != LBRACKET {
+		return errorf(d.current.Pos, "expected '[' for repeated field %q", fd.Name())
+	}
+	d.advance()
+
+	list := msg.Mutable(fd).List()
+
+	for d.current.Kind != RBRACKET && d.current.Kind != EOF {
+		if d.current.Kind == NULL {
+			return errorf(d.current.Pos, "null is not allowed in repeated field %q", fd.Name())
+		}
+		if fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind {
+			v, err := d.consumeListMsg(fd, list)
+			if err != nil {
+				return err
+			}
+			list.Append(v)
+		} else if fd.Kind() == protoreflect.EnumKind {
+			v, err := d.consumeEnum(fd)
+			if err != nil {
+				return err
+			}
+			list.Append(v)
+		} else {
+			v, err := d.consumeScalar(fd)
+			if err != nil {
+				return err
+			}
+			list.Append(v)
+		}
+		if d.current.Kind == COMMA {
+			d.advance()
+		}
+	}
+
+	if d.current.Kind != RBRACKET {
+		return errorf(d.current.Pos, "expected ']', got %s", d.current.Kind)
+	}
+	d.advance()
+	return nil
+}
+
+func (d *directDecoder) consumeListMsg(fd protoreflect.FieldDescriptor, list protoreflect.List) (protoreflect.Value, error) {
+	mdesc := fd.Message()
+
+	if isTimestamp(mdesc) && d.current.Kind == TIMESTAMP {
+		t, err := time.Parse(time.RFC3339Nano, d.current.Value)
+		if err != nil {
+			t, _ = time.Parse(time.RFC3339, d.current.Value)
+		}
+		sub := list.NewElement().Message()
+		setTimestampFields(sub, t)
+		d.advance()
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+	if isDuration(mdesc) && d.current.Kind == DURATION {
+		dur, _ := time.ParseDuration(d.current.Value)
+		sub := list.NewElement().Message()
+		setDurationFields(sub, dur)
+		d.advance()
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+	if _, ok := wrapperTypes[mdesc.FullName()]; ok && d.current.Kind != LBRACE {
+		innerFd := mdesc.Fields().ByName("value")
+		v, err := d.consumeScalar(innerFd)
+		if err != nil {
+			return protoreflect.Value{}, err
+		}
+		sub := list.NewElement().Message()
+		sub.Set(innerFd, v)
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+	if isBigInt(mdesc) && d.current.Kind == INT {
+		bi, err := parseBigInt(d.current.Value)
+		if err != nil {
+			return protoreflect.Value{}, errorf(d.current.Pos, "%v", err)
+		}
+		sub := list.NewElement().Message()
+		setBigIntFields(sub, bi)
+		d.advance()
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+	if isDecimal(mdesc) && (d.current.Kind == INT || d.current.Kind == FLOAT) {
+		unscaled, scale, negative, err := parseDecimal(d.current.Value)
+		if err != nil {
+			return protoreflect.Value{}, errorf(d.current.Pos, "%v", err)
+		}
+		sub := list.NewElement().Message()
+		setDecimalFields(sub, unscaled, scale, negative)
+		d.advance()
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+	if isBigFloat(mdesc) && (d.current.Kind == INT || d.current.Kind == FLOAT) {
+		bf, err := parseBigFloat(d.current.Value)
+		if err != nil {
+			return protoreflect.Value{}, errorf(d.current.Pos, "%v", err)
+		}
+		sub := list.NewElement().Message()
+		setBigFloatFields(sub, bf)
+		d.advance()
+		return protoreflect.ValueOfMessage(sub), nil
+	}
+
+	if d.current.Kind != LBRACE {
+		return protoreflect.Value{}, errorf(d.current.Pos, "expected '{' for repeated message element")
+	}
+	d.advance()
+	sub := list.NewElement().Message()
+	if err := d.decodeFields(sub, true); err != nil {
+		return protoreflect.Value{}, err
+	}
+	return protoreflect.ValueOfMessage(sub), nil
+}
+
+func (d *directDecoder) decodeMapInline(msg protoreflect.Message, fd protoreflect.FieldDescriptor) error {
+	if d.current.Kind != LBRACE {
+		return errorf(d.current.Pos, "expected '{' for map field %q", fd.Name())
+	}
+	d.advance()
+
+	m := msg.Mutable(fd).Map()
+	keyFd := fd.MapKey()
+	valFd := fd.MapValue()
+
+	for d.current.Kind != RBRACE && d.current.Kind != EOF {
+		pos := d.current.Pos
+		if d.current.Kind != IDENT && d.current.Kind != STRING && d.current.Kind != INT {
+			return errorf(pos, "expected map key, got %s", d.current.Kind)
+		}
+		keyStr := strings.Clone(d.current.Value)
+		d.advance()
+
+		switch d.current.Kind {
+		case COLON:
+			d.advance()
+		case EQUALS:
+			return errorf(d.current.Pos, "unexpected '=' in map, use ':' for map entries")
+		default:
+			return errorf(d.current.Pos, "expected ':' after map key, got %s", d.current.Kind)
+		}
+
+		k, err := decodeMapKey(keyFd, keyStr, pos)
+		if err != nil {
+			return err
+		}
+
+		if d.current.Kind == NULL {
+			return errorf(d.current.Pos, "null is not allowed as map value in field %q", fd.Name())
+		}
+
+		if valFd.Kind() == protoreflect.MessageKind || valFd.Kind() == protoreflect.GroupKind {
+			if d.current.Kind != LBRACE {
+				return errorf(d.current.Pos, "expected '{' for map message value")
+			}
+			d.advance()
+			sub := m.NewValue().Message()
+			if err := d.decodeFields(sub, true); err != nil {
+				return err
+			}
+			m.Set(k, protoreflect.ValueOfMessage(sub))
+		} else if valFd.Kind() == protoreflect.EnumKind {
+			v, err := d.consumeEnum(valFd)
+			if err != nil {
+				return err
+			}
+			m.Set(k, v)
+		} else {
+			v, err := d.consumeScalar(valFd)
+			if err != nil {
+				return err
+			}
+			m.Set(k, v)
+		}
+	}
+
+	if d.current.Kind != RBRACE {
+		return errorf(d.current.Pos, "expected '}', got %s", d.current.Kind)
+	}
+	d.advance()
+	return nil
+}
+
+func (d *directDecoder) consumeScalar(fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
+	pos := d.current.Pos
+
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		if d.current.Kind != STRING {
+			return protoreflect.Value{}, errorf(pos, "expected string for field %q", fd.Name())
+		}
+		v := protoreflect.ValueOfString(d.current.Value)
+		d.advance()
+		return v, nil
+
+	case protoreflect.BoolKind:
+		if d.current.Kind != BOOL {
+			return protoreflect.Value{}, errorf(pos, "expected bool for field %q", fd.Name())
+		}
+		v := protoreflect.ValueOfBool(d.current.Value == "true")
+		d.advance()
+		return v, nil
+
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		if d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected integer for field %q", fd.Name())
+		}
+		n, err := strconv.ParseInt(d.current.Value, 10, 32)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid int32: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfInt32(int32(n)), nil
+
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		if d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected integer for field %q", fd.Name())
+		}
+		n, err := strconv.ParseInt(d.current.Value, 10, 64)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid int64: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfInt64(n), nil
+
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		if d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected integer for field %q", fd.Name())
+		}
+		n, err := strconv.ParseUint(d.current.Value, 10, 32)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid uint32: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfUint32(uint32(n)), nil
+
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		if d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected integer for field %q", fd.Name())
+		}
+		n, err := strconv.ParseUint(d.current.Value, 10, 64)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid uint64: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfUint64(n), nil
+
+	case protoreflect.FloatKind:
+		if d.current.Kind != FLOAT && d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected number for field %q", fd.Name())
+		}
+		f, err := strconv.ParseFloat(d.current.Value, 32)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid float: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfFloat32(float32(f)), nil
+
+	case protoreflect.DoubleKind:
+		if d.current.Kind != FLOAT && d.current.Kind != INT {
+			return protoreflect.Value{}, errorf(pos, "expected number for field %q", fd.Name())
+		}
+		f, err := strconv.ParseFloat(d.current.Value, 64)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid double: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfFloat64(f), nil
+
+	case protoreflect.BytesKind:
+		if d.current.Kind != BYTES {
+			return protoreflect.Value{}, errorf(pos, "expected bytes for field %q", fd.Name())
+		}
+		decoded, err := base64.StdEncoding.DecodeString(d.current.Value)
+		if err != nil {
+			decoded, _ = base64.RawStdEncoding.DecodeString(d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfBytes(decoded), nil
+
+	case protoreflect.EnumKind:
+		return d.consumeEnum(fd)
+
+	default:
+		return protoreflect.Value{}, errorf(pos, "unsupported kind %s for field %q", fd.Kind(), fd.Name())
+	}
+}
+
+func (d *directDecoder) consumeEnum(fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
+	pos := d.current.Pos
+	switch d.current.Kind {
+	case IDENT:
+		ev := fd.Enum().Values().ByName(protoreflect.Name(d.current.Value))
+		if ev == nil {
+			return protoreflect.Value{}, errorf(pos, "unknown enum value %q for %s", d.current.Value, fd.Enum().FullName())
+		}
+		d.advance()
+		return protoreflect.ValueOfEnum(ev.Number()), nil
+	case INT:
+		n, err := strconv.ParseInt(d.current.Value, 10, 32)
+		if err != nil {
+			return protoreflect.Value{}, errorf(pos, "invalid enum number: %s", d.current.Value)
+		}
+		d.advance()
+		return protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)), nil
+	default:
+		return protoreflect.Value{}, errorf(pos, "expected enum name or number for field %q", fd.Name())
+	}
+}
+
+// skipValue skips the current value token (scalar, block, or list).
+func (d *directDecoder) skipValue() {
+	switch d.current.Kind {
+	case LBRACE:
+		d.advance()
+		d.skipBraced()
+	case LBRACKET:
+		d.advance()
+		d.skipBracketed()
+	default:
+		d.advance() // scalar
+	}
+}
+
+// skipBraced skips tokens until the matching closing '}'.
+func (d *directDecoder) skipBraced() {
+	depth := 1
+	for depth > 0 && d.current.Kind != EOF {
+		switch d.current.Kind {
+		case LBRACE:
+			depth++
+		case RBRACE:
+			depth--
+		}
+		d.advance()
+	}
+}
+
+// skipBracketed skips tokens until the matching closing ']'.
+func (d *directDecoder) skipBracketed() {
+	depth := 1
+	for depth > 0 && d.current.Kind != EOF {
+		switch d.current.Kind {
+		case LBRACKET:
+			depth++
+		case RBRACKET:
+			depth--
+		}
+		d.advance()
+	}
+}
+
+// addToNullMask appends a dotted field path to the root message's _null FieldMask.
+func addToNullMask(rootMsg protoreflect.Message, nullMaskFd protoreflect.FieldDescriptor, path string) {
+	fmMsg := rootMsg.Mutable(nullMaskFd).Message()
+	pathsFd := fmMsg.Descriptor().Fields().ByName("paths")
+	list := fmMsg.Mutable(pathsFd).List()
+	list.Append(protoreflect.ValueOfString(path))
+}
+
+// postDecode validates required fields and applies defaults, recursing into
+// nested messages that were present in the input.
+func postDecode(msg protoreflect.Message, result *Result, nullMaskFd protoreflect.FieldDescriptor, pathPrefix string) error {
+	desc := msg.Descriptor()
+	fields := desc.Fields()
+	for i := range fields.Len() {
+		fd := fields.Get(i)
+		if nullMaskFd != nil && fd.Number() == nullMaskFd.Number() {
+			continue
+		}
+		path := pathPrefix + string(fd.Name())
+		_, isPresent := result.presentFields[path]
+		if !isPresent {
+			if isRequired(fd) {
+				return errorf(Position{1, 1}, "required field %q is absent", path)
+			}
+			if def, ok := getDefault(fd); ok {
+				if err := applyDefault(msg, fd, def); err != nil {
+					return err
+				}
+			}
+		} else if (fd.Kind() == protoreflect.MessageKind || fd.Kind() == protoreflect.GroupKind) &&
+			!fd.IsList() && !fd.IsMap() && !result.IsNull(path) && msg.Has(fd) {
+			// Recurse into present, non-null message fields.
+			sub := msg.Mutable(fd).Message()
+			if err := postDecode(sub, result, nil, path+"."); err != nil {
+				return err
+			}
+		}
+		// null + default → do NOT apply default (null is intentional)
+	}
+	return nil
+}
+
+// applyDefault parses a default value string and sets it on the message field.
+func applyDefault(msg protoreflect.Message, fd protoreflect.FieldDescriptor, def string) error {
+	switch fd.Kind() {
+	case protoreflect.StringKind:
+		msg.Set(fd, protoreflect.ValueOfString(def))
+	case protoreflect.BoolKind:
+		msg.Set(fd, protoreflect.ValueOfBool(def == "true"))
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		n, err := strconv.ParseInt(def, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid default int32 %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfInt32(int32(n)))
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		n, err := strconv.ParseInt(def, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid default int64 %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfInt64(n))
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		n, err := strconv.ParseUint(def, 10, 32)
+		if err != nil {
+			return fmt.Errorf("invalid default uint32 %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfUint32(uint32(n)))
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		n, err := strconv.ParseUint(def, 10, 64)
+		if err != nil {
+			return fmt.Errorf("invalid default uint64 %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfUint64(n))
+	case protoreflect.FloatKind:
+		f, err := strconv.ParseFloat(def, 32)
+		if err != nil {
+			return fmt.Errorf("invalid default float %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfFloat32(float32(f)))
+	case protoreflect.DoubleKind:
+		f, err := strconv.ParseFloat(def, 64)
+		if err != nil {
+			return fmt.Errorf("invalid default double %q for field %q: %w", def, fd.Name(), err)
+		}
+		msg.Set(fd, protoreflect.ValueOfFloat64(f))
+	case protoreflect.BytesKind:
+		decoded, err := base64.StdEncoding.DecodeString(def)
+		if err != nil {
+			decoded, err = base64.RawStdEncoding.DecodeString(def)
+			if err != nil {
+				return fmt.Errorf("invalid default bytes %q for field %q: %w", def, fd.Name(), err)
+			}
+		}
+		msg.Set(fd, protoreflect.ValueOfBytes(decoded))
+	case protoreflect.EnumKind:
+		ev := fd.Enum().Values().ByName(protoreflect.Name(def))
+		if ev == nil {
+			n, err := strconv.ParseInt(def, 10, 32)
+			if err != nil {
+				return fmt.Errorf("invalid default enum %q for field %q", def, fd.Name())
+			}
+			msg.Set(fd, protoreflect.ValueOfEnum(protoreflect.EnumNumber(n)))
+		} else {
+			msg.Set(fd, protoreflect.ValueOfEnum(ev.Number()))
+		}
+	case protoreflect.MessageKind:
+		return applyMessageDefault(msg, fd, def)
+	default:
+		return fmt.Errorf("default values not supported for kind %s (field %q)", fd.Kind(), fd.Name())
+	}
+	return nil
+}
+
+// applyMessageDefault handles defaults for well-known message types.
+func applyMessageDefault(msg protoreflect.Message, fd protoreflect.FieldDescriptor, def string) error {
+	mdesc := fd.Message()
+
+	if isTimestamp(mdesc) {
+		t, err := time.Parse(time.RFC3339Nano, def)
+		if err != nil {
+			t, err = time.Parse(time.RFC3339, def)
+			if err != nil {
+				return fmt.Errorf("invalid default timestamp %q for field %q: %w", def, fd.Name(), err)
+			}
+		}
+		sub := msg.Mutable(fd).Message()
+		setTimestampFields(sub, t)
+		return nil
+	}
+
+	if isDuration(mdesc) {
+		dur, err := time.ParseDuration(def)
+		if err != nil {
+			return fmt.Errorf("invalid default duration %q for field %q: %w", def, fd.Name(), err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setDurationFields(sub, dur)
+		return nil
+	}
+
+	if innerKind, ok := wrapperTypes[mdesc.FullName()]; ok {
+		innerFd := mdesc.Fields().ByName("value")
+		sub := msg.Mutable(fd).Message()
+		v, err := parseScalarDefault(innerKind, def, fd)
+		if err != nil {
+			return err
+		}
+		sub.Set(innerFd, v)
+		return nil
+	}
+
+	if isBigInt(mdesc) {
+		bi, err := parseBigInt(def)
+		if err != nil {
+			return fmt.Errorf("invalid default big integer %q for field %q: %w", def, fd.Name(), err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setBigIntFields(sub, bi)
+		return nil
+	}
+	if isDecimal(mdesc) {
+		unscaled, scale, negative, err := parseDecimal(def)
+		if err != nil {
+			return fmt.Errorf("invalid default decimal %q for field %q: %w", def, fd.Name(), err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setDecimalFields(sub, unscaled, scale, negative)
+		return nil
+	}
+	if isBigFloat(mdesc) {
+		bf, err := parseBigFloat(def)
+		if err != nil {
+			return fmt.Errorf("invalid default big float %q for field %q: %w", def, fd.Name(), err)
+		}
+		sub := msg.Mutable(fd).Message()
+		setBigFloatFields(sub, bf)
+		return nil
+	}
+
+	return fmt.Errorf("default values not supported for message type %s (field %q)", mdesc.FullName(), fd.Name())
+}
+
+// parseScalarDefault parses a default string for a scalar kind.
+func parseScalarDefault(kind protoreflect.Kind, def string, fd protoreflect.FieldDescriptor) (protoreflect.Value, error) {
+	switch kind {
+	case protoreflect.StringKind:
+		return protoreflect.ValueOfString(def), nil
+	case protoreflect.BoolKind:
+		return protoreflect.ValueOfBool(def == "true"), nil
+	case protoreflect.Int32Kind, protoreflect.Sint32Kind, protoreflect.Sfixed32Kind:
+		n, err := strconv.ParseInt(def, 10, 32)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default int32 %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfInt32(int32(n)), nil
+	case protoreflect.Int64Kind, protoreflect.Sint64Kind, protoreflect.Sfixed64Kind:
+		n, err := strconv.ParseInt(def, 10, 64)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default int64 %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfInt64(n), nil
+	case protoreflect.Uint32Kind, protoreflect.Fixed32Kind:
+		n, err := strconv.ParseUint(def, 10, 32)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default uint32 %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfUint32(uint32(n)), nil
+	case protoreflect.Uint64Kind, protoreflect.Fixed64Kind:
+		n, err := strconv.ParseUint(def, 10, 64)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default uint64 %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfUint64(n), nil
+	case protoreflect.FloatKind:
+		f, err := strconv.ParseFloat(def, 32)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default float %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfFloat32(float32(f)), nil
+	case protoreflect.DoubleKind:
+		f, err := strconv.ParseFloat(def, 64)
+		if err != nil {
+			return protoreflect.Value{}, fmt.Errorf("invalid default double %q for field %q: %w", def, fd.Name(), err)
+		}
+		return protoreflect.ValueOfFloat64(f), nil
+	default:
+		return protoreflect.Value{}, fmt.Errorf("unsupported default kind %s for field %q", kind, fd.Name())
+	}
+}
