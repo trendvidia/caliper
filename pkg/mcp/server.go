@@ -1548,6 +1548,8 @@ func (s *Server) findingsResult(findings []templates.Finding, req ...mcpsdk.Call
 		return s.findingsSummary(findings)
 	case "grouped":
 		return s.findingsGrouped(findings)
+	case "sarif":
+		return s.findingsSARIF(findings)
 	default:
 		return s.findingsCompact(findings)
 	}
@@ -1588,6 +1590,81 @@ func (s *Server) findingsGrouped(findings []templates.Finding) *mcpsdk.CallToolR
 		result["root"] = root
 	}
 	return jsonResult(result)
+}
+
+func (s *Server) findingsSARIF(findings []templates.Finding) *mcpsdk.CallToolResult {
+	// Build SARIF v2.1.0 output for GitHub Code Scanning.
+	// https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
+
+	// Collect unique rule IDs.
+	ruleMap := map[string]int{}
+	var rules []map[string]any
+	for _, f := range findings {
+		if _, ok := ruleMap[f.Kind]; !ok {
+			ruleMap[f.Kind] = len(rules)
+			rule := map[string]any{
+				"id": f.Kind,
+				"shortDescription": map[string]any{
+					"text": f.Kind,
+				},
+			}
+			rules = append(rules, rule)
+		}
+	}
+
+	sevMap := map[string]string{
+		"error":   "error",
+		"warning": "warning",
+		"info":    "note",
+	}
+
+	var results []map[string]any
+	for _, f := range findings {
+		level := sevMap[f.Severity]
+		if level == "" {
+			level = "warning"
+		}
+
+		result := map[string]any{
+			"ruleId":  f.Kind,
+			"level":   level,
+			"message": map[string]any{"text": f.Message},
+			"locations": []map[string]any{{
+				"physicalLocation": map[string]any{
+					"artifactLocation": map[string]any{
+						"uri": f.Location.File,
+					},
+					"region": map[string]any{
+						"startLine":   f.Location.Line,
+						"startColumn": f.Location.Column,
+					},
+				},
+			}},
+		}
+		if f.Suggestion != "" {
+			result["fixes"] = []map[string]any{{
+				"description": map[string]any{"text": f.Suggestion},
+			}}
+		}
+		results = append(results, result)
+	}
+
+	sarif := map[string]any{
+		"version": "2.1.0",
+		"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
+		"runs": []map[string]any{{
+			"tool": map[string]any{
+				"driver": map[string]any{
+					"name":    "Caliper",
+					"version": "1.0.6",
+					"rules":   rules,
+				},
+			},
+			"results": results,
+		}},
+	}
+
+	return jsonResult(sarif)
 }
 
 func (s *Server) findingsCompact(findings []templates.Finding) *mcpsdk.CallToolResult {
