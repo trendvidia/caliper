@@ -11,11 +11,24 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 
 	"github.com/trendvidia/caliper/pkg/mcp"
 )
 
 func main() {
+	// Ensure full stack traces on fatal crashes (concurrent map access, etc.)
+	// so the root cause can be diagnosed from MCP client logs.
+	os.Setenv("GOTRACEBACK", "crash")
+
+	// Top-level panic recovery — last resort before process death.
+	defer func() {
+		if r := recover(); r != nil {
+			fmt.Fprintf(os.Stderr, "caliper: fatal panic: %v\n%s\n", r, debug.Stack())
+			os.Exit(2)
+		}
+	}()
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 
@@ -25,8 +38,12 @@ func main() {
 		os.Exit(1)
 	}
 
+	fmt.Fprintf(os.Stderr, "caliper: server starting\n")
+
 	if err := srv.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "caliper: %v\n", err)
 		os.Exit(1)
 	}
+
+	fmt.Fprintf(os.Stderr, "caliper: server stopped\n")
 }
