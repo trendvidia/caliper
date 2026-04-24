@@ -14,9 +14,11 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -73,7 +75,23 @@ func NewServer() (*Server, error) {
 // Run starts the MCP server on stdio.
 func (s *Server) Run(ctx context.Context) error {
 	stdio := mcpserver.NewStdioServer(s.mcp)
-	return stdio.Listen(ctx, os.Stdin, os.Stdout)
+	// Wrap stdout with a mutex to prevent interleaved writes between
+	// the main message handler and the notification goroutine.
+	return stdio.Listen(ctx, os.Stdin, &syncWriter{w: os.Stdout})
+}
+
+// syncWriter wraps a writer with a mutex to prevent concurrent writes
+// from corrupting output. The mcp-go StdioServer writes from both
+// processMessage and handleNotifications without synchronization.
+type syncWriter struct {
+	mu sync.Mutex
+	w  io.Writer
+}
+
+func (sw *syncWriter) Write(p []byte) (int, error) {
+	sw.mu.Lock()
+	defer sw.mu.Unlock()
+	return sw.w.Write(p)
 }
 
 // safeHandler wraps a tool handler with panic recovery and logging so that
