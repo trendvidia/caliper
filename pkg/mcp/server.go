@@ -101,6 +101,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(findTaintFlowTool, s.handleFindTaintFlow)
 	s.mcp.AddTool(findCallSitesTool, s.handleFindCallSites)
 	s.mcp.AddTool(findDeferInLoopTool, s.handleFindDeferInLoop)
+	s.mcp.AddTool(findErrorSwallowTool, s.handleFindErrorSwallow)
 }
 
 // defaultPath returns the given path or the configured default.
@@ -1115,6 +1116,22 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 		"total":            len(hits),
 		"hits":             hits,
 	}), nil
+}
+
+func (s *Server) handleFindErrorSwallow(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	path := stringParam(req, "path")
+	path = s.defaultPath(path)
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	tmpl := &templates.ErrorSwallow{
+		IncludeDropped: boolParam(req, "include_dropped"),
+	}
+	findings := templates.RunTemplate(engine, tmpl)
+	return s.findingsResult(findings, req), nil
 }
 
 func (s *Server) handleFindDeferInLoop(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

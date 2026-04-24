@@ -776,6 +776,72 @@ func usesTodo() {
 }
 
 // --------------------------------------------------------------------------
+// ErrorSwallow tests
+// --------------------------------------------------------------------------
+
+func TestErrorSwallow_ExplicitBlank(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func swallower() {
+	_, _ = os.Open("file.txt")
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ErrorSwallow{}
+	findings := RunTemplate(engine, tmpl)
+	errs := findingsOfKind(findings, "error_swallow")
+	if len(errs) == 0 {
+		t.Error("expected error_swallow finding for _, _ = os.Open()")
+	}
+}
+
+func TestErrorSwallow_HandledError(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func handler() error {
+	f, err := os.Open("file.txt")
+	if err != nil {
+		return err
+	}
+	f.Close()
+	return nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ErrorSwallow{}
+	findings := RunTemplate(engine, tmpl)
+	errs := findingsOfKind(findings, "error_swallow")
+	if len(errs) > 0 {
+		t.Errorf("expected no error_swallow finding when error is handled, got %d: %s", len(errs), errs[0].Message)
+	}
+}
+
+func TestErrorSwallow_DroppedReturn(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func dropper() {
+	f, _ := os.Open("file.txt")
+	f.Close()
+}
+`
+	engine := setupProject(t, src)
+	// With IncludeDropped, f.Close() should be flagged.
+	tmpl := &ErrorSwallow{IncludeDropped: true}
+	findings := RunTemplate(engine, tmpl)
+	// Should find both: the _ in os.Open AND the dropped f.Close()
+	errs := findingsOfKind(findings, "error_swallow")
+	if len(errs) < 2 {
+		t.Errorf("expected at least 2 error_swallow findings (blank + dropped), got %d", len(errs))
+	}
+}
+
+// --------------------------------------------------------------------------
 // DeferInLoop tests
 // --------------------------------------------------------------------------
 

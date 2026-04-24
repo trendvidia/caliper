@@ -840,7 +840,42 @@ func allTools() []mcpsdk.Tool {
 		findTaintFlowTool,
 		findCallSitesTool,
 		findDeferInLoopTool,
+		findErrorSwallowTool,
 	}
+}
+
+var findErrorSwallowTool = mcpsdk.Tool{
+	Name: "find_error_swallow",
+	Description: `Find explicitly discarded or silently dropped error return values.
+
+WHAT IT CATCHES:
+  - _ = f()              — explicit discard of error return
+  - f, _ := os.Open(p)   — discarded error in multi-return assignment
+  - _, _ := f()          — both returns discarded
+
+OPTIONAL (with include_dropped=true):
+  - f.Close()            — error return silently dropped (common, often intentional)
+
+WHY THIS MATTERS:
+  Discarded errors hide failures. A file that fails to open, a connection
+  that fails to close, or a write that silently fails can cause data loss
+  or subtle bugs that are very hard to diagnose.
+
+USE THIS TOOL WHEN: auditing error handling, reviewing new code, or
+enforcing "no ignored errors" policies.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"include_dropped": map[string]any{
+				"type":        "boolean",
+				"description": "If true, also flag calls where the error return is silently dropped (not assigned at all). Default: false.",
+			},
+		},
+	},
 }
 
 var findDeferInLoopTool = mcpsdk.Tool{
