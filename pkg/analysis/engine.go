@@ -55,7 +55,7 @@ func NewEngine(dir string, patterns ...string) (*Engine, error) {
 // NewEngineWithOptions creates an engine with explicit options.
 func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*Engine, error) {
 	if len(patterns) == 0 {
-		patterns = []string{"./..."}
+		patterns = detectPatterns(dir)
 	}
 
 	cfg := &packages.Config{
@@ -68,6 +68,14 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		Dir: dir,
 	}
 
+	// For stdlib (GOROOT/src), set GOROOT env and don't set Dir
+	// since the stdlib isn't a regular module.
+	if isGoRootSrc(dir) {
+		goroot := filepath.Dir(dir) // /path/to/go/libexec/src → /path/to/go/libexec
+		cfg.Dir = ""
+		cfg.Env = append(os.Environ(), "GOROOT="+goroot)
+	}
+
 	// Apply build tags.
 	if len(opts.BuildTags) > 0 {
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(opts.BuildTags, ",")}
@@ -78,26 +86,70 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		return nil, fmt.Errorf("loading packages: %w", err)
 	}
 
-	// Check for load errors.
-	var errs []error
+	// Filter out packages with errors but keep those that loaded successfully.
+	// This is important for large codebases (like stdlib) where some packages
+	// may fail due to build constraints, cgo, or platform-specific code.
+	var validPkgs []*packages.Package
 	for _, pkg := range pkgs {
-		for _, e := range pkg.Errors {
-			errs = append(errs, e)
+		if len(pkg.Errors) == 0 && pkg.Types != nil {
+			validPkgs = append(validPkgs, pkg)
 		}
 	}
-	if len(errs) > 0 {
-		return nil, fmt.Errorf("package errors: %v", errs[0])
-	}
 
-	if len(pkgs) == 0 {
+	// If ALL packages failed, report the first error.
+	if len(validPkgs) == 0 {
+		if len(pkgs) > 0 && len(pkgs[0].Errors) > 0 {
+			return nil, fmt.Errorf("package errors: %v", pkgs[0].Errors[0])
+		}
 		return nil, fmt.Errorf("no packages found in %s", dir)
 	}
+
+	pkgs = validPkgs
 
 	return &Engine{
 		fset: pkgs[0].Fset,
 		pkgs: pkgs,
 		opts: opts,
 	}, nil
+}
+
+// detectPatterns determines the right package patterns for the given directory.
+// For GOROOT/src, it uses "std" to load the stdlib. Otherwise "./...".
+func detectPatterns(dir string) []string {
+	if isGoRootSrc(dir) {
+		return []string{"std"}
+	}
+	// Check for subdirectory of GOROOT/src (e.g., GOROOT/src/go/ast).
+	goroot := os.Getenv("GOROOT")
+	if goroot != "" {
+		srcDir := filepath.Join(goroot, "src")
+		if rel, err := filepath.Rel(srcDir, dir); err == nil && !strings.HasPrefix(rel, "..") {
+			// Convert filesystem path to import path.
+			return []string{rel + "/..."}
+		}
+	}
+	return []string{"./..."}
+}
+
+// isGoRootSrc checks if a directory is the Go stdlib source root (GOROOT/src).
+func isGoRootSrc(dir string) bool {
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		return false
+	}
+	// Check if this directory contains "go" and "fmt" subdirectories
+	// (hallmarks of GOROOT/src).
+	for _, marker := range []string{"fmt", "go", "net", "os"} {
+		if _, err := os.Stat(filepath.Join(abs, marker)); err != nil {
+			return false
+		}
+	}
+	// Also check that the parent has a "pkg" or "bin" directory (GOROOT structure).
+	parent := filepath.Dir(abs)
+	if _, err := os.Stat(filepath.Join(parent, "pkg")); err == nil {
+		return true
+	}
+	return false
 }
 
 // Fset returns the shared file set.
