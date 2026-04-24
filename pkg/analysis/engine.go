@@ -68,14 +68,17 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		Dir: dir,
 	}
 
-	// For stdlib (module std), set GOROOT env, disable go.work
-	// (a workspace file above the target would interfere), and
-	// don't set Dir since the stdlib isn't a regular module.
-	// This checks both the target dir and parent dirs for module std.
+	// For stdlib (module std), disable go.work (a workspace file above
+	// the target would interfere). Only override GOROOT if the target
+	// has a compiled toolchain (pkg/tool/ exists); otherwise keep the
+	// system GOROOT and just load the source.
 	if stdRoot := findStdlibRoot(dir); stdRoot != "" {
 		goroot := filepath.Dir(stdRoot) // .../go/src → .../go
-		cfg.Dir = ""
-		cfg.Env = append(os.Environ(), "GOROOT="+goroot, "GOWORK=off")
+		cfg.Env = append(os.Environ(), "GOWORK=off")
+		if hasCompiledToolchain(goroot) {
+			cfg.Dir = ""
+			cfg.Env = append(cfg.Env, "GOROOT="+goroot)
+		}
 	}
 
 	// Apply build tags.
@@ -210,6 +213,18 @@ func isStdlibDir(abs string) bool {
 func isGoRootSrc(dir string) bool {
 	abs, _ := filepath.Abs(dir)
 	return isStdlibDir(abs)
+}
+
+// hasCompiledToolchain checks if a GOROOT has compiled tools (compile, link, etc.)
+// under pkg/tool/. A source-only checkout won't have these.
+func hasCompiledToolchain(goroot string) bool {
+	toolDir := filepath.Join(goroot, "pkg", "tool")
+	entries, err := os.ReadDir(toolDir)
+	if err != nil {
+		return false
+	}
+	// Should have at least one platform directory (e.g., darwin_arm64).
+	return len(entries) > 0
 }
 
 // hasEnv checks if an env slice contains a specific key=value pair.
