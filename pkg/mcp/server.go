@@ -200,31 +200,30 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 		neg := patterns.NewNegative(p)
 		absences := neg.MatchAbsence(engine)
 
-		var matches []map[string]any
+		var hits []map[string]any
 		for _, m := range absences {
-			match := map[string]any{
-				"file": m.File,
-				"line": m.Line,
+			hit := map[string]any{
+				"loc": fmt.Sprintf("%s:%d", m.File, m.Line),
 			}
 			if len(m.Bindings) > 0 {
 				bindMap := make(map[string]string)
 				for name, b := range m.Bindings {
 					bindMap[name] = printNode(engine.Fset(), b.Node)
 				}
-				match["bindings"] = bindMap
+				hit["bindings"] = bindMap
 			}
-			matches = append(matches, match)
+			hits = append(hits, hit)
 		}
 
 		return jsonResult(map[string]any{
-			"pattern":       pattern,
-			"negative":      true,
-			"total": len(matches),
-			"matches":       matches,
+			"pattern":  pattern,
+			"negative": true,
+			"total":    len(hits),
+			"hits":     hits,
 		}), nil
 	}
 
-	var matches []map[string]any
+	var hits []map[string]any
 	engine.Walk(func(pkg *packages.Package, file *ast.File, node ast.Node, info *types.Info) bool {
 		bindings := p.MatchNode(node, info)
 		if bindings == nil {
@@ -232,10 +231,8 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 		}
 
 		loc := engine.LocationOf(node.Pos())
-		match := map[string]any{
-			"file":   loc.File,
-			"line":   loc.Line,
-			"column": loc.Column,
+		hit := map[string]any{
+			"loc": compactLoc(loc),
 		}
 
 		// Include bindings.
@@ -244,17 +241,17 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 			for name, b := range *bindings {
 				bindMap[name] = fmt.Sprintf("%v", b.Node)
 			}
-			match["bindings"] = bindMap
+			hit["bindings"] = bindMap
 		}
 
-		matches = append(matches, match)
+		hits = append(hits, hit)
 		return true
 	})
 
 	return jsonResult(map[string]any{
-		"pattern":       pattern,
-		"total": len(matches),
-		"matches":       matches,
+		"pattern": pattern,
+		"total":   len(hits),
+		"hits":    hits,
 	}), nil
 }
 
@@ -365,10 +362,8 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 				if kind != "" && pos.IsValid() && (wantAll || wantKinds[kind]) {
 					loc := engine.LocationOf(pos)
 					usages = append(usages, map[string]any{
-						"kind":   kind,
-						"file":   loc.File,
-						"line":   loc.Line,
-						"column": loc.Column,
+						"kind": kind,
+						"loc":  compactLoc(loc),
 					})
 				}
 
@@ -378,9 +373,9 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 	}
 
 	return jsonResult(map[string]any{
-		"type_name":    typeName,
-		"total": len(usages),
-		"usages":       usages,
+		"type_name": typeName,
+		"total":     len(usages),
+		"hits":      usages,
 	}), nil
 }
 
@@ -877,7 +872,7 @@ func (s *Server) handleListEquivalences(ctx context.Context, req mcpsdk.CallTool
 	return jsonResult(map[string]any{
 		"category": category,
 		"total":    len(result),
-		"equivalences": result,
+		"hits":     result,
 	}), nil
 }
 
@@ -1070,8 +1065,8 @@ func (s *Server) handleFindTaintFlow(ctx context.Context, req mcpsdk.CallToolReq
 	return jsonResult(map[string]any{
 		"source_type":   sourceType,
 		"sink_function": sinkFunction,
-		"total":   len(results),
-		"flows":         results,
+		"total":         len(results),
+		"hits":          results,
 	}), nil
 }
 
@@ -1106,19 +1101,18 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 
 	matches := patterns.FindCallSitesByPattern(engine, ipc, pat)
 
-	var results []map[string]any
+	var hits []map[string]any
 	for _, m := range matches {
-		results = append(results, map[string]any{
-			"file": m.File,
-			"line": m.Line,
+		hits = append(hits, map[string]any{
+			"loc": fmt.Sprintf("%s:%d", m.File, m.Line),
 		})
 	}
 
 	return jsonResult(map[string]any{
 		"function_pattern": functionPattern,
 		"algorithm":        algoStr,
-		"total": len(results),
-		"call_sites":       results,
+		"total":            len(hits),
+		"hits":             hits,
 	}), nil
 }
 
@@ -1192,6 +1186,11 @@ func jsonResult(v any) *mcpsdk.CallToolResult {
 			},
 		},
 	}
+}
+
+// compactLoc formats a FileLocation as a compact "file:line:col" string.
+func compactLoc(loc analysis.FileLocation) string {
+	return fmt.Sprintf("%s:%d:%d", loc.File, loc.Line, loc.Column)
 }
 
 func errorResult(format string, args ...any) *mcpsdk.CallToolResult {
