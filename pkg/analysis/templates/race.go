@@ -119,6 +119,17 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 			continue
 		}
 
+		// Check if there is a WaitGroup.Wait() before the variable use.
+		if hasWaitGroupSync(stmtsAfterGo, varName) {
+			continue
+		}
+
+		// Check if the variable is only accessed inside a sync.Once.Do() call
+		// in the closure (safe single-execution pattern).
+		if isAccessedInsideSyncOnce(funcLit.Body, varName) {
+			continue
+		}
+
 		// Check if there is mutex protection around both accesses.
 		if hasMutexProtection(ctx.Func.Func.Body, goStmt, varName) {
 			continue
@@ -668,6 +679,84 @@ func hasChannelSyncBefore(stmts []ast.Stmt, varName string) bool {
 		}
 	}
 	return false
+}
+
+// hasWaitGroupSync checks if there is a .Wait() call before the variable
+// is used in the given statements. WaitGroup.Wait() is a synchronization point.
+func hasWaitGroupSync(stmts []ast.Stmt, varName string) bool {
+	for _, stmt := range stmts {
+		if stmtHasWaitCall(stmt) {
+			return true
+		}
+		if identUsedInStmts([]ast.Stmt{stmt}, varName) {
+			return false
+		}
+	}
+	return false
+}
+
+// stmtHasWaitCall checks if a statement contains a .Wait() method call.
+func stmtHasWaitCall(stmt ast.Stmt) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		sel, ok := call.Fun.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if sel.Sel.Name == "Wait" {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// isAccessedInsideSyncOnce checks if all accesses to a variable inside a
+// closure body are within a sync.Once.Do() call. This is a safe pattern
+// for one-time initialization.
+func isAccessedInsideSyncOnce(body *ast.BlockStmt, varName string) bool {
+	// Check if any statement in the body is a .Do() call containing
+	// the variable, and the variable is NOT used outside of .Do() calls.
+	hasDoAccess := false
+	hasNonDoAccess := false
+
+	for _, stmt := range body.List {
+		if isOnceDoStmt(stmt) {
+			if identUsedInStmts([]ast.Stmt{stmt}, varName) {
+				hasDoAccess = true
+			}
+		} else {
+			if identUsedInStmts([]ast.Stmt{stmt}, varName) {
+				hasNonDoAccess = true
+			}
+		}
+	}
+
+	return hasDoAccess && !hasNonDoAccess
+}
+
+// isOnceDoStmt checks if a statement is a call to something.Do(func() { ... }).
+func isOnceDoStmt(stmt ast.Stmt) bool {
+	exprStmt, ok := stmt.(*ast.ExprStmt)
+	if !ok {
+		return false
+	}
+	call, ok := exprStmt.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	return sel.Sel.Name == "Do"
 }
 
 // stmtHasChanRecv checks if a statement contains a channel receive operation.

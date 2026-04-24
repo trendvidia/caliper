@@ -1282,6 +1282,33 @@ func chanSync() {
 	}
 }
 
+func TestRaceCondition_WaitGroupSync(t *testing.T) {
+	// Variable access after wg.Wait() is synchronized.
+	src := `package testpkg
+
+import "sync"
+
+func wgSync() {
+	var wg sync.WaitGroup
+	result := 0
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		result = 42
+	}()
+	wg.Wait()
+	_ = result
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race for WaitGroup-synchronized variable, got %d: %s", len(races), races[0].Message)
+	}
+}
+
 func TestRaceCondition_ReadOnlyPointerCapture(t *testing.T) {
 	// Read-only pointer capture — goroutine calls methods but doesn't
 	// reassign the variable. Not a race.
