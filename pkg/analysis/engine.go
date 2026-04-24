@@ -132,19 +132,27 @@ func detectPatterns(dir string) []string {
 }
 
 // isGoRootSrc checks if a directory is the Go stdlib source root (GOROOT/src).
+// It detects this by checking for "module std" in go.mod (Go 1.21+) or by
+// filesystem heuristics for older Go versions.
 func isGoRootSrc(dir string) bool {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
 		return false
 	}
-	// Check if this directory contains "go" and "fmt" subdirectories
-	// (hallmarks of GOROOT/src).
+
+	// Primary check: look for "module std" in go.mod.
+	if data, err := os.ReadFile(filepath.Join(abs, "go.mod")); err == nil {
+		if strings.Contains(string(data), "module std") {
+			return true
+		}
+	}
+
+	// Fallback: check for stdlib directory markers + GOROOT structure.
 	for _, marker := range []string{"fmt", "go", "net", "os"} {
 		if _, err := os.Stat(filepath.Join(abs, marker)); err != nil {
 			return false
 		}
 	}
-	// Also check that the parent has a "pkg" or "bin" directory (GOROOT structure).
 	parent := filepath.Dir(abs)
 	if _, err := os.Stat(filepath.Join(parent, "pkg")); err == nil {
 		return true

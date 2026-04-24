@@ -4,11 +4,23 @@ import (
 	"go/ast"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"golang.org/x/tools/go/packages"
 )
+
+// testGOROOT returns GOROOT for tests, using `go env GOROOT`.
+func testGOROOT(t *testing.T) string {
+	t.Helper()
+	out, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		t.Skip("could not determine GOROOT")
+	}
+	return strings.TrimSpace(string(out))
+}
 
 func setupTestProject(t *testing.T, files map[string]string) string {
 	t.Helper()
@@ -251,5 +263,107 @@ func TestNewEngineForFile(t *testing.T) {
 	funcs := engine.FuncNodes()
 	if len(funcs) != 2 {
 		t.Errorf("expected 2 functions, got %d", len(funcs))
+	}
+}
+
+// --------------------------------------------------------------------------
+// Go stdlib (module std) support
+// --------------------------------------------------------------------------
+
+func TestDetectPatterns_GoRootSrc(t *testing.T) {
+	goroot := testGOROOT(t)
+	srcDir := filepath.Join(goroot, "src")
+
+	if _, err := os.Stat(srcDir); err != nil {
+		t.Skip("GOROOT/src not available")
+	}
+
+	patterns := detectPatterns(srcDir)
+	if len(patterns) != 1 || patterns[0] != "std" {
+		t.Errorf("expected [\"std\"] for GOROOT/src, got %v", patterns)
+	}
+}
+
+func TestDetectPatterns_GoRootSubdir(t *testing.T) {
+	goroot := testGOROOT(t)
+	fmtDir := filepath.Join(goroot, "src", "fmt")
+
+	if _, err := os.Stat(fmtDir); err != nil {
+		t.Skip("GOROOT/src/fmt not available")
+	}
+
+	// Set GOROOT so the subdirectory detection works.
+	t.Setenv("GOROOT", goroot)
+
+	patterns := detectPatterns(fmtDir)
+	if len(patterns) != 1 || patterns[0] != "fmt/..." {
+		t.Errorf("expected [\"fmt/...\"] for GOROOT/src/fmt, got %v", patterns)
+	}
+}
+
+func TestDetectPatterns_RegularProject(t *testing.T) {
+	dir := setupTestProject(t, map[string]string{
+		"code.go": "package testpkg\n\nfunc Hello() {}\n",
+	})
+
+	patterns := detectPatterns(dir)
+	if len(patterns) != 1 || patterns[0] != "./..." {
+		t.Errorf("expected [\"./...\"] for regular project, got %v", patterns)
+	}
+}
+
+func TestIsGoRootSrc(t *testing.T) {
+	goroot := testGOROOT(t)
+	srcDir := filepath.Join(goroot, "src")
+
+	if _, err := os.Stat(srcDir); err != nil {
+		t.Skip("GOROOT/src not available")
+	}
+
+	if !isGoRootSrc(srcDir) {
+		t.Error("expected isGoRootSrc=true for GOROOT/src")
+	}
+}
+
+func TestIsGoRootSrc_RegularDir(t *testing.T) {
+	dir := t.TempDir()
+	if isGoRootSrc(dir) {
+		t.Error("expected isGoRootSrc=false for temp dir")
+	}
+}
+
+func TestEngine_StdlibPackage(t *testing.T) {
+	goroot := testGOROOT(t)
+	fmtDir := filepath.Join(goroot, "src", "fmt")
+
+	if _, err := os.Stat(fmtDir); err != nil {
+		t.Skip("GOROOT/src/fmt not available")
+	}
+
+	engine, err := NewEngine(fmtDir)
+	if err != nil {
+		t.Fatalf("failed to load stdlib fmt: %v", err)
+	}
+
+	pkgs := engine.Packages()
+	if len(pkgs) == 0 {
+		t.Fatal("expected at least one package from fmt")
+	}
+
+	// fmt package should have functions like Println, Sprintf, etc.
+	funcs := engine.FuncNodes()
+	if len(funcs) == 0 {
+		t.Error("expected functions in fmt package")
+	}
+
+	hasPrintln := false
+	for _, fc := range funcs {
+		if fc.Func.Name.Name == "Println" {
+			hasPrintln = true
+			break
+		}
+	}
+	if !hasPrintln {
+		t.Error("expected to find fmt.Println")
 	}
 }
