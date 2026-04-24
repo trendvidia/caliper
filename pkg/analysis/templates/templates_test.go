@@ -483,6 +483,75 @@ func mapChecked(flag bool) {
 	}
 }
 
+func TestNilDeref_TypeAssertInlineIf(t *testing.T) {
+	// The most common Go idiom: if x, ok := expr.(Type); ok { x.Method() }
+	// This must NOT be flagged — ok IS checked as the if condition.
+	src := `package testpkg
+
+import "io"
+
+func typeAssertInline(v interface{}) {
+	if r, ok := v.(io.Reader); ok {
+		r.Read(nil)
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &NilDeref{}
+	findings := RunTemplate(engine, tmpl)
+	nils := findingsOfKind(findings, "nil_deref")
+	if len(nils) > 0 {
+		t.Errorf("expected no nil deref for if r, ok := v.(Type); ok { r.Use() }, got %d: %s", len(nils), nils[0].Message)
+	}
+}
+
+func TestNilDeref_TypeAssertSeparate(t *testing.T) {
+	// Separated form: x, ok := expr.(Type); if ok { x.Method() }
+	src := `package testpkg
+
+import "io"
+
+func typeAssertSeparate(v interface{}) {
+	r, ok := v.(io.Reader)
+	if ok {
+		r.Read(nil)
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &NilDeref{}
+	findings := RunTemplate(engine, tmpl)
+	nils := findingsOfKind(findings, "nil_deref")
+	if len(nils) > 0 {
+		t.Errorf("expected no nil deref for x, ok := v.(Type); if ok { x.Use() }, got %d: %s", len(nils), nils[0].Message)
+	}
+}
+
+func TestNilDeref_TypeAssertUnchecked(t *testing.T) {
+	// Type assertion with ok not checked — this SHOULD be flagged.
+	// The dereference must be in a different CFG block than the assignment
+	// (checkGuardBeforeDeref skips the start block).
+	src := `package testpkg
+
+import "io"
+
+func typeAssertUnchecked(v interface{}, flag bool) {
+	r, ok := v.(io.Reader)
+	if flag {
+		r.Read(nil)
+	}
+	_ = ok
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &NilDeref{}
+	findings := RunTemplate(engine, tmpl)
+	nils := findingsOfKind(findings, "nil_deref")
+	if len(nils) == 0 {
+		t.Error("expected nil deref finding for type assertion with ok not checked before use")
+	}
+}
+
 // --------------------------------------------------------------------------
 // SQLInjection tests
 // --------------------------------------------------------------------------
@@ -725,6 +794,30 @@ func noGoroutines() {
 	}
 }
 
+func TestGoroutineLeak_OneShotWorker(t *testing.T) {
+	// A goroutine that does finite work and returns should NOT be flagged.
+	src := `package testpkg
+
+import "fmt"
+
+func oneShotWorker() {
+	go func() {
+		result := compute()
+		fmt.Println(result)
+	}()
+}
+
+func compute() int { return 42 }
+`
+	engine := setupProject(t, src)
+	tmpl := &GoroutineLeak{}
+	findings := RunTemplate(engine, tmpl)
+	leaks := findingsOfKind(findings, "goroutine_leak")
+	if len(leaks) > 0 {
+		t.Errorf("expected no goroutine leak for one-shot worker, got %d: %s", len(leaks), leaks[0].Message)
+	}
+}
+
 // --------------------------------------------------------------------------
 // RaceCondition tests
 // --------------------------------------------------------------------------
@@ -788,5 +881,75 @@ func loopRace() {
 	races := findingsOfKind(findings, "race_condition")
 	if len(races) == 0 {
 		t.Error("expected race condition finding for loop variable captured by goroutine closure")
+	}
+}
+
+func TestRaceCondition_ChannelVariable(t *testing.T) {
+	// Channels are designed for concurrent use and should not be flagged.
+	src := `package testpkg
+
+func chanUser() {
+	ch := make(chan int, 1)
+	go func() {
+		ch <- 42
+	}()
+	<-ch
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race for channel variable, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestRaceCondition_ReadOnlyCapture(t *testing.T) {
+	// Read-only capture of an immutable value type (string) should not be flagged.
+	src := `package testpkg
+
+import "fmt"
+
+func readOnly() {
+	path := "/tmp/test"
+	go func() {
+		fmt.Println(path)
+	}()
+	fmt.Println(path)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race for read-only string capture, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestRaceCondition_ChannelSync(t *testing.T) {
+	// Variable access after a channel receive is synchronized.
+	src := `package testpkg
+
+import "fmt"
+
+func chanSync() {
+	result := 0
+	done := make(chan bool, 1)
+	go func() {
+		result = 42
+		done <- true
+	}()
+	<-done
+	fmt.Println(result)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race for channel-synchronized variable, got %d: %s", len(races), races[0].Message)
 	}
 }

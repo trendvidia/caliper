@@ -49,6 +49,13 @@ func (gl *GoroutineLeak) checkNode(ctx *TemplateContext, node ast.Node) []Findin
 			return true
 		}
 
+		// Only flag goroutines that contain an infinite loop without a
+		// termination mechanism. One-shot goroutines that do finite work
+		// and return naturally are not leaks.
+		if !hasInfiniteLoop(funcLit.Body) {
+			return true
+		}
+
 		// Check if the goroutine body has a termination mechanism.
 		if hasTerminationMechanism(funcLit.Body) {
 			return true
@@ -78,7 +85,7 @@ func (gl *GoroutineLeak) checkNode(ctx *TemplateContext, node ast.Node) []Findin
 			Kind:     "goroutine_leak",
 			Severity: "warning",
 			Message: fmt.Sprintf(
-				"goroutine at %s:%d may never terminate: no channel receive, context.Done(), or range-over-channel found%s",
+				"goroutine at %s:%d may never terminate: infinite loop without channel receive, context.Done(), or range-over-channel%s",
 				pos.Filename, pos.Line, contextWarning,
 			),
 			Location:   ctx.Engine.LocationOf(goStmt.Pos()),
@@ -89,6 +96,37 @@ func (gl *GoroutineLeak) checkNode(ctx *TemplateContext, node ast.Node) []Findin
 	})
 
 	return findings
+}
+
+// hasInfiniteLoop checks if a function body contains an infinite loop:
+// `for { }`, `for true { }`, or `for ;; { }`. These are the patterns that
+// indicate a goroutine is intended to run indefinitely and thus needs an
+// explicit termination mechanism.
+func hasInfiniteLoop(body *ast.BlockStmt) bool {
+	found := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		forStmt, ok := n.(*ast.ForStmt)
+		if !ok {
+			return true
+		}
+		// `for { }` — no init, condition, or post.
+		if forStmt.Init == nil && forStmt.Cond == nil && forStmt.Post == nil {
+			found = true
+			return false
+		}
+		// `for true { }` — condition is the literal `true`.
+		if forStmt.Cond != nil && forStmt.Init == nil && forStmt.Post == nil {
+			if ident, ok := forStmt.Cond.(*ast.Ident); ok && ident.Name == "true" {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
 }
 
 // hasTerminationMechanism walks the function body AST and checks for

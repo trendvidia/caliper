@@ -4,40 +4,48 @@ Semantic code analysis and transformation tool for Go, inspired by [Coccinelle](
 
 ## Install
 
-```bash
-brew install trendvidia/tap/caliper --head
-```
-
-Or build from source:
+### Homebrew (macOS)
 
 ```bash
-go install github.com/trendvidia/caliper/cmd/caliper-mcp@latest
+export HOMEBREW_GITHUB_API_TOKEN=$(gh auth token)
+brew install trendvidia/tap/caliper
 ```
+
+### From source
+
+```bash
+GOPRIVATE=github.com/trendvidia/* go install github.com/trendvidia/caliper/cmd/caliper-mcp@latest
+```
+
+Note: `GOPRIVATE` is required because the `protowire` dependency is a private module.
 
 ## Claude Code MCP Configuration
 
-Add Caliper to your Claude Code settings (`~/.claude/settings.json`):
+Register Caliper as an MCP server using the `claude mcp add` command:
+
+```bash
+# Available across all your projects
+claude mcp add --scope user caliper -- /opt/homebrew/bin/caliper
+
+# Or for a single project only
+claude mcp add caliper -- /opt/homebrew/bin/caliper
+```
+
+If you installed via `go install`, use the full path to the binary:
+
+```bash
+claude mcp add --scope user caliper -- $(go env GOPATH)/bin/caliper-mcp
+```
+
+After adding, restart Claude Code for the MCP server to be loaded.
+
+For team-wide configuration, add a `.mcp.json` file to your project root:
 
 ```json
 {
   "mcpServers": {
     "caliper": {
       "command": "caliper",
-      "args": []
-    }
-  }
-}
-```
-
-Or for a project-specific setup, add to `.claude/settings.json` in your repo root.
-
-If you installed via `go install` instead of Homebrew, use the full path:
-
-```json
-{
-  "mcpServers": {
-    "caliper": {
-      "command": "/path/to/go/bin/caliper-mcp",
       "args": []
     }
   }

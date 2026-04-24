@@ -91,7 +91,7 @@ func (nd *NilDeref) Analyze(ctx *TemplateContext) []Finding {
 			return nodeDereferencesVar(node, valName)
 		}
 
-		violations := checkGuardBeforeDeref(ctx.CFG, assignBlock, guardPred, derefPred)
+		violations := checkGuardBeforeDeref(ctx.CFG, assignBlock, guardName, guardPred, derefPred)
 
 		for _, v := range violations {
 			pos := ctx.Fset.Position(assign.Pos())
@@ -171,8 +171,10 @@ func findBlockContaining(g *cfg.Graph, target ast.Node) *cfg.Block {
 
 // condReferencesVar checks if a node is a condition that references the
 // given variable name. Handles full IfStmt nodes, bare binary expressions,
-// and unary expressions (the CFG branch blocks store only the condition
-// expression, not the full IfStmt).
+// and unary expressions. Note: bare identifiers used as conditions (e.g.,
+// `if ok { }`) are handled separately in branchBlockReferencesVar since they
+// appear as top-level nodes in BlockBranch blocks and would cause false
+// matches when found via ast.Inspect inside assignment statements.
 func condReferencesVar(node ast.Node, varName string) bool {
 	switch n := node.(type) {
 	case *ast.IfStmt:
@@ -181,6 +183,24 @@ func condReferencesVar(node ast.Node, varName string) bool {
 		return exprReferencesIdent(n, varName)
 	case *ast.UnaryExpr:
 		return exprReferencesIdent(n, varName)
+	}
+	return false
+}
+
+// branchBlockReferencesVar checks if a BlockBranch block's condition
+// references the guard variable. This handles the case where the condition
+// is a bare identifier (e.g., `if ok { ... }`) which produces a branch
+// block containing just *ast.Ident as its top-level node.
+func branchBlockReferencesVar(block *cfg.Block, varName string) bool {
+	if block.Kind != cfg.BlockBranch {
+		return false
+	}
+	for _, node := range block.Nodes {
+		if expr, ok := node.(ast.Expr); ok {
+			if exprReferencesIdent(expr, varName) {
+				return true
+			}
+		}
 	}
 	return false
 }
@@ -230,7 +250,7 @@ func nodeDereferencesVar(node ast.Node, varName string) bool {
 // checkGuardBeforeDeref does a BFS from start, tracking whether the guard
 // predicate was seen. Reports violations where derefPred is reached
 // without the guard.
-func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardPred, derefPred cfg.NodePredicate) []cfg.PathResult {
+func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardVarName string, guardPred, derefPred cfg.NodePredicate) []cfg.PathResult {
 	var violations []cfg.PathResult
 
 	type state struct {
@@ -252,6 +272,12 @@ func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardPred, derefPred 
 
 		guarded := cur.guarded
 		if !guarded && blockSatisfies(cur.block, guardPred) {
+			guarded = true
+		}
+		// Also check if this is a branch block whose condition directly
+		// references the guard variable (handles bare `if ok { }` where
+		// the CFG branch block contains just the *ast.Ident).
+		if !guarded && branchBlockReferencesVar(cur.block, guardVarName) {
 			guarded = true
 		}
 

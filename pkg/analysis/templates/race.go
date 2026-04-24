@@ -79,6 +79,15 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 	// Step 5: For each free variable, check if it is also accessed after
 	// the go statement, and if so, check for mutex protection.
 	for varName := range freeVars {
+		// Skip channel-type variables — channels are designed for concurrent use.
+		if ctx.Func.Info != nil {
+			if obj := lookupIdent(ctx, varName); obj != nil {
+				if isChanType(obj.Type()) {
+					continue
+				}
+			}
+		}
+
 		// Check if the variable is used after the go statement at the same scope level.
 		usedAfter := identUsedInStmts(stmtsAfterGo, varName)
 
@@ -88,6 +97,25 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 		}
 
 		if !usedAfter {
+			continue
+		}
+
+		// Skip if the variable is only read (not written) after the go
+		// statement AND is an immutable value type (string, int, bool, etc.).
+		// Read-only captures of value types are safe — but loop variables
+		// are always mutated by the loop, so don't skip those.
+		isLoopVar := enclosingLoop != nil && isLoopVariable(enclosingLoop, varName)
+		if !isLoopVar && ctx.Func.Info != nil {
+			if obj := lookupIdent(ctx, varName); obj != nil {
+				if isImmutableValueType(obj.Type()) && !identWrittenInStmts(stmtsAfterGo, varName) {
+					continue
+				}
+			}
+		}
+
+		// Check if there is channel-based synchronization between the go
+		// statement and the variable use (e.g., <-done or <-errc before read).
+		if hasChannelSyncBefore(stmtsAfterGo, varName) {
 			continue
 		}
 
@@ -528,4 +556,96 @@ func isMapType(t types.Type) bool {
 	}
 	_, ok := t.Underlying().(*types.Map)
 	return ok
+}
+
+// isChanType checks if a type is a channel type.
+func isChanType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	_, ok := t.Underlying().(*types.Chan)
+	return ok
+}
+
+// isImmutableValueType checks if a type is an immutable value type (string,
+// bool, numeric) that is safe to capture read-only in a goroutine closure.
+func isImmutableValueType(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	b, ok := t.Underlying().(*types.Basic)
+	if !ok {
+		return false
+	}
+	switch b.Kind() {
+	case types.String, types.Bool,
+		types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
+		types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64, types.Uintptr,
+		types.Float32, types.Float64, types.Complex64, types.Complex128:
+		return true
+	}
+	return false
+}
+
+// identWrittenInStmts checks if a variable is assigned to (written) in any
+// of the given statements.
+func identWrittenInStmts(stmts []ast.Stmt, name string) bool {
+	for _, stmt := range stmts {
+		found := false
+		ast.Inspect(stmt, func(n ast.Node) bool {
+			if found {
+				return false
+			}
+			assign, ok := n.(*ast.AssignStmt)
+			if !ok {
+				return true
+			}
+			for _, lhs := range assign.Lhs {
+				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == name {
+					found = true
+					return false
+				}
+			}
+			return true
+		})
+		if found {
+			return true
+		}
+	}
+	return false
+}
+
+// hasChannelSyncBefore checks if there is a channel receive operation
+// before the variable is used in the given statements. A channel receive
+// acts as a synchronization point.
+func hasChannelSyncBefore(stmts []ast.Stmt, varName string) bool {
+	for _, stmt := range stmts {
+		// Check if this statement is a channel receive (synchronization point).
+		if stmtHasChanRecv(stmt) {
+			return true
+		}
+		// If we encounter the variable use before any sync, not synchronized.
+		if identUsedInStmts([]ast.Stmt{stmt}, varName) {
+			return false
+		}
+	}
+	return false
+}
+
+// stmtHasChanRecv checks if a statement contains a channel receive operation.
+func stmtHasChanRecv(stmt ast.Stmt) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		switch expr := n.(type) {
+		case *ast.UnaryExpr:
+			if expr.Op == token.ARROW {
+				found = true
+			}
+		}
+		return !found
+	})
+	return found
 }
