@@ -68,11 +68,12 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		Dir: dir,
 	}
 
-	// For stdlib (GOROOT/src), set GOROOT env, disable go.work
+	// For stdlib (module std), set GOROOT env, disable go.work
 	// (a workspace file above the target would interfere), and
 	// don't set Dir since the stdlib isn't a regular module.
-	if isGoRootSrc(dir) {
-		goroot := filepath.Dir(dir) // /path/to/go/libexec/src → /path/to/go/libexec
+	// This checks both the target dir and parent dirs for module std.
+	if stdRoot := findStdlibRoot(dir); stdRoot != "" {
+		goroot := filepath.Dir(stdRoot) // .../go/src → .../go
 		cfg.Dir = ""
 		cfg.Env = append(os.Environ(), "GOROOT="+goroot, "GOWORK=off")
 	}
@@ -83,6 +84,14 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	}
 
 	pkgs, err := packages.Load(cfg, patterns...)
+
+	// If loading failed, retry with GOWORK=off in case a go.work file
+	// above the target is interfering.
+	if err != nil && cfg.Env == nil {
+		cfg.Env = append(os.Environ(), "GOWORK=off")
+		pkgs, err = packages.Load(cfg, patterns...)
+	}
+
 	if err != nil {
 		return nil, fmt.Errorf("loading packages: %w", err)
 	}
@@ -97,7 +106,20 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		}
 	}
 
-	// If ALL packages failed, report the first error.
+	// If ALL packages failed, check if a go.work might be interfering
+	// and retry with GOWORK=off.
+	if len(validPkgs) == 0 && !hasEnv(cfg.Env, "GOWORK=off") {
+		cfg.Env = append(os.Environ(), "GOWORK=off")
+		pkgs, err = packages.Load(cfg, patterns...)
+		if err == nil {
+			for _, pkg := range pkgs {
+				if len(pkg.Errors) == 0 && pkg.Types != nil {
+					validPkgs = append(validPkgs, pkg)
+				}
+			}
+		}
+	}
+
 	if len(validPkgs) == 0 {
 		if len(pkgs) > 0 && len(pkgs[0].Errors) > 0 {
 			return nil, fmt.Errorf("package errors: %v", pkgs[0].Errors[0])
@@ -117,37 +139,62 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 // detectPatterns determines the right package patterns for the given directory.
 // For GOROOT/src, it uses "std" to load the stdlib. Otherwise "./...".
 func detectPatterns(dir string) []string {
-	if isGoRootSrc(dir) {
+	if stdRoot := findStdlibRoot(dir); stdRoot != "" {
+		abs, _ := filepath.Abs(dir)
+		if abs == stdRoot {
+			return []string{"std"}
+		}
+		// Subdirectory of stdlib src — convert to import path.
+		if rel, err := filepath.Rel(stdRoot, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			return []string{rel + "/..."}
+		}
 		return []string{"std"}
 	}
-	// Check for subdirectory of GOROOT/src (e.g., GOROOT/src/go/ast).
+	// Also check system GOROOT for installed Go.
 	goroot := os.Getenv("GOROOT")
 	if goroot != "" {
 		srcDir := filepath.Join(goroot, "src")
-		if rel, err := filepath.Rel(srcDir, dir); err == nil && !strings.HasPrefix(rel, "..") {
-			// Convert filesystem path to import path.
+		abs, _ := filepath.Abs(dir)
+		if rel, err := filepath.Rel(srcDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
+			if rel == "." {
+				return []string{"std"}
+			}
 			return []string{rel + "/..."}
 		}
 	}
 	return []string{"./..."}
 }
 
-// isGoRootSrc checks if a directory is the Go stdlib source root (GOROOT/src).
-// It detects this by checking for "module std" in go.mod (Go 1.21+) or by
-// filesystem heuristics for older Go versions.
-func isGoRootSrc(dir string) bool {
+// findStdlibRoot walks up from dir looking for a directory containing a
+// go.mod with "module std" (the Go stdlib). Returns the stdlib src root
+// path, or "" if not found.
+func findStdlibRoot(dir string) string {
 	abs, err := filepath.Abs(dir)
 	if err != nil {
-		return false
+		return ""
 	}
 
-	// Primary check: look for "module std" in go.mod.
+	for {
+		if isStdlibDir(abs) {
+			return abs
+		}
+		parent := filepath.Dir(abs)
+		if parent == abs {
+			break
+		}
+		abs = parent
+	}
+	return ""
+}
+
+// isStdlibDir checks if a directory is a Go stdlib source root.
+func isStdlibDir(abs string) bool {
+	// Primary: check for "module std" in go.mod.
 	if data, err := os.ReadFile(filepath.Join(abs, "go.mod")); err == nil {
 		if strings.Contains(string(data), "module std") {
 			return true
 		}
 	}
-
 	// Fallback: check for stdlib directory markers + GOROOT structure.
 	for _, marker := range []string{"fmt", "go", "net", "os"} {
 		if _, err := os.Stat(filepath.Join(abs, marker)); err != nil {
@@ -155,8 +202,22 @@ func isGoRootSrc(dir string) bool {
 		}
 	}
 	parent := filepath.Dir(abs)
-	if _, err := os.Stat(filepath.Join(parent, "pkg")); err == nil {
-		return true
+	_, err := os.Stat(filepath.Join(parent, "pkg"))
+	return err == nil
+}
+
+// isGoRootSrc is an alias for backward compatibility with tests.
+func isGoRootSrc(dir string) bool {
+	abs, _ := filepath.Abs(dir)
+	return isStdlibDir(abs)
+}
+
+// hasEnv checks if an env slice contains a specific key=value pair.
+func hasEnv(env []string, kv string) bool {
+	for _, e := range env {
+		if e == kv {
+			return true
+		}
 	}
 	return false
 }
