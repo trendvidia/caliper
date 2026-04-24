@@ -99,7 +99,7 @@ func example(c io.Closer) {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_matches"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected at least one match for $x.Close()")
 	}
@@ -128,7 +128,7 @@ func example() {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_matches"].(float64)
+	total := data["total"].(float64)
 	if total != 0 {
 		t.Errorf("expected 0 matches, got %v", total)
 	}
@@ -163,7 +163,7 @@ func use() {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_usages"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected at least one usage of Config")
 	}
@@ -199,7 +199,7 @@ func leaky() {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_findings"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected at least one resource leak finding")
 	}
@@ -233,7 +233,7 @@ func bad() {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_findings"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected at least one unchecked error finding")
 	}
@@ -267,7 +267,7 @@ func noUnlock() {
 	}
 
 	data := resultJSON(t, result)
-	total := data["total_findings"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected at least one lock violation finding")
 	}
@@ -372,7 +372,7 @@ func doWork()   {}
 
 	data := resultJSON(t, result)
 	// validate() is NOT called before doWork() → should report violation.
-	total := data["total_findings"].(float64)
+	total := data["total"].(float64)
 	if total == 0 {
 		t.Error("expected violation: validate() not called before doWork()")
 	}
@@ -435,8 +435,8 @@ func example(c io.Closer) {
 	}
 	data2 := resultJSON(t, result2)
 
-	if data1["total_matches"] != data2["total_matches"] {
-		t.Errorf("cached result mismatch: %v vs %v", data1["total_matches"], data2["total_matches"])
+	if data1["total"] != data2["total"] {
+		t.Errorf("cached result mismatch: %v vs %v", data1["total"], data2["total"])
 	}
 
 	// Verify cache entry exists.

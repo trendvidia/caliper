@@ -219,7 +219,7 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 		return jsonResult(map[string]any{
 			"pattern":       pattern,
 			"negative":      true,
-			"total_matches": len(matches),
+			"total": len(matches),
 			"matches":       matches,
 		}), nil
 	}
@@ -253,7 +253,7 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 
 	return jsonResult(map[string]any{
 		"pattern":       pattern,
-		"total_matches": len(matches),
+		"total": len(matches),
 		"matches":       matches,
 	}), nil
 }
@@ -379,7 +379,7 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 
 	return jsonResult(map[string]any{
 		"type_name":    typeName,
-		"total_usages": len(usages),
+		"total": len(usages),
 		"usages":       usages,
 	}), nil
 }
@@ -664,8 +664,8 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 		"property":       property,
 		"from_pattern":   fromPattern,
 		"target_pattern": targetPattern,
-		"total_findings": len(findings),
-		"findings":       findings,
+		"total": len(findings),
+		"hits":  findings,
 	}), nil
 }
 
@@ -933,8 +933,8 @@ func (s *Server) handleRunPatterns(ctx context.Context, req mcpsdk.CallToolReque
 	}
 
 	return jsonResult(map[string]any{
-		"total_findings": len(allFindings),
-		"findings":       allFindings,
+		"total": len(allFindings),
+		"hits":  allFindings,
 	}), nil
 }
 
@@ -1070,7 +1070,7 @@ func (s *Server) handleFindTaintFlow(ctx context.Context, req mcpsdk.CallToolReq
 	return jsonResult(map[string]any{
 		"source_type":   sourceType,
 		"sink_function": sinkFunction,
-		"total_flows":   len(results),
+		"total":   len(results),
 		"flows":         results,
 	}), nil
 }
@@ -1117,7 +1117,7 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 	return jsonResult(map[string]any{
 		"function_pattern": functionPattern,
 		"algorithm":        algoStr,
-		"total_call_sites": len(results),
+		"total": len(results),
 		"call_sites":       results,
 	}), nil
 }
@@ -1180,7 +1180,7 @@ func boolParamDefault(req mcpsdk.CallToolRequest, key string, def bool) bool {
 }
 
 func jsonResult(v any) *mcpsdk.CallToolResult {
-	data, err := json.MarshalIndent(v, "", "  ")
+	data, err := json.Marshal(v)
 	if err != nil {
 		return errorResult("Failed to marshal result: %v", err)
 	}
@@ -1285,6 +1285,29 @@ func typeStringMatches(t types.Type, fullName, baseName string) bool {
 	return false
 }
 
+// filterFindings applies max_findings and min_severity limits.
+func filterFindings(findings []templates.Finding, req mcpsdk.CallToolRequest) []templates.Finding {
+	// Filter by min_severity.
+	if minSev := stringParam(req, "min_severity"); minSev != "" {
+		sevOrder := map[string]int{"info": 0, "warning": 1, "error": 2}
+		minLevel := sevOrder[minSev]
+		var filtered []templates.Finding
+		for _, f := range findings {
+			if sevOrder[f.Severity] >= minLevel {
+				filtered = append(filtered, f)
+			}
+		}
+		findings = filtered
+	}
+
+	// Apply max_findings limit.
+	if max := intParam(req, "max_findings"); max > 0 && len(findings) > max {
+		findings = findings[:max]
+	}
+
+	return findings
+}
+
 // applySeverityOverrides applies configured severity overrides to findings.
 func (s *Server) applySeverityOverrides(findings []templates.Finding) []templates.Finding {
 	if s.cfg == nil {
@@ -1296,13 +1319,67 @@ func (s *Server) applySeverityOverrides(findings []templates.Finding) []template
 	return findings
 }
 
-// findingsResult builds a JSON result from findings, applying config overrides.
-func (s *Server) findingsResult(findings []templates.Finding) *mcpsdk.CallToolResult {
+// compactFinding is a token-efficient representation of a finding for MCP output.
+type compactFinding struct {
+	Loc string `json:"loc"`
+	Sev string `json:"sev,omitempty"`
+	Msg string `json:"msg"`
+	Fix string `json:"fix,omitempty"`
+}
+
+// findingsResult builds a compact JSON result from findings, applying config overrides.
+// Output uses short keys, relative paths, and omits empty/redundant fields
+// to minimize token count for LLM consumers.
+func (s *Server) findingsResult(findings []templates.Finding, req ...mcpsdk.CallToolRequest) *mcpsdk.CallToolResult {
 	findings = s.applySeverityOverrides(findings)
-	return jsonResult(map[string]any{
-		"total_findings": len(findings),
-		"findings":       findings,
-	})
+	if len(req) > 0 {
+		findings = filterFindings(findings, req[0])
+	}
+
+	// Find common root path for relative paths.
+	root := findCommonRoot(findings)
+
+	compact := make([]compactFinding, len(findings))
+	for i, f := range findings {
+		relFile := f.Location.File
+		if root != "" {
+			relFile = strings.TrimPrefix(f.Location.File, root+"/")
+		}
+		compact[i] = compactFinding{
+			Loc: fmt.Sprintf("%s:%d:%d", relFile, f.Location.Line, f.Location.Column),
+			Sev: f.Severity,
+			Msg: f.Message,
+			Fix: f.Suggestion,
+		}
+	}
+
+	result := map[string]any{
+		"total": len(findings),
+		"hits":  compact,
+	}
+	if root != "" {
+		result["root"] = root
+	}
+	return jsonResult(result)
+}
+
+// findCommonRoot extracts the longest common directory prefix from finding locations.
+func findCommonRoot(findings []templates.Finding) string {
+	if len(findings) == 0 {
+		return ""
+	}
+	root := filepath.Dir(findings[0].Location.File)
+	for _, f := range findings[1:] {
+		dir := filepath.Dir(f.Location.File)
+		for !strings.HasPrefix(dir, root) {
+			parent := filepath.Dir(root)
+			if parent == root {
+				return ""
+			}
+			root = parent
+		}
+	}
+	return root
 }
 
 // transformResultWithDiff wraps a transform.Result, adding unified diffs
