@@ -165,6 +165,12 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 		return nil, fmt.Errorf("resolving path: %w", err)
 	}
 
+	// Lock this path to prevent concurrent loads/analyses.
+	// Multiple concurrent tool calls on the same codebase are serialized
+	// to prevent races on shared type info in go/types maps.
+	unlock := s.cache.lock(absPath)
+	defer unlock()
+
 	if eng := s.cache.get(absPath); eng != nil {
 		return eng, nil
 	}

@@ -162,6 +162,11 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 		// from the client don't queue behind each other. The writer
 		// must be safe for concurrent use (e.g., wrapped in a mutex).
 		go func(msg string) {
+			defer func() {
+				if r := recover(); r != nil {
+					s.errLogger.Printf("Recovered panic in message handler: %v", r)
+				}
+			}()
 			if err := s.processMessage(ctx, msg, stdout); err != nil {
 				if err != io.EOF {
 					s.errLogger.Printf("Error handling message: %v", err)

@@ -29,6 +29,7 @@ type engineCache struct {
 type cacheEntry struct {
 	path   string
 	engine *analysis.Engine
+	mu     sync.Mutex // serializes concurrent analysis on the same engine
 }
 
 func newEngineCache(maxSize int) *engineCache {
@@ -68,6 +69,32 @@ func (c *engineCache) get(absPath string) *analysis.Engine {
 
 	c.misses++
 	return nil
+}
+
+// lock acquires the per-engine mutex for the given path, preventing
+// concurrent analysis on the same engine. Returns an unlock function.
+// If the engine isn't cached, returns a no-op.
+func (c *engineCache) lock(absPath string) func() {
+	c.mu.Lock()
+	var entry *cacheEntry
+	if elem, ok := c.entries[absPath]; ok {
+		entry = elem.Value.(*cacheEntry)
+	} else {
+		for _, elem := range c.entries {
+			e := elem.Value.(*cacheEntry)
+			if isSubPath(e.path, absPath) {
+				entry = e
+				break
+			}
+		}
+	}
+	c.mu.Unlock()
+
+	if entry == nil {
+		return func() {}
+	}
+	entry.mu.Lock()
+	return entry.mu.Unlock
 }
 
 // put adds an engine to the cache, evicting the least recently used
