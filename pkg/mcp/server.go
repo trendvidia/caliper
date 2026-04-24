@@ -104,6 +104,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(findErrorSwallowTool, s.handleFindErrorSwallow)
 	s.mcp.AddTool(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
 	s.mcp.AddTool(checkInterfaceTool, s.handleCheckInterface)
+	s.mcp.AddTool(explainFindingTool, s.handleExplainFinding)
 }
 
 // defaultPath returns the given path or the configured default.
@@ -1118,6 +1119,145 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 		"total":            len(hits),
 		"hits":             hits,
 	}), nil
+}
+
+func (s *Server) handleExplainFinding(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	file := stringParam(req, "file")
+	line := intParam(req, "line")
+	kind := stringParam(req, "kind")
+	path := stringParam(req, "path")
+	path = s.defaultPath(path)
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	// Select the template based on kind.
+	tmpl := s.templateForKind(kind)
+	if tmpl == nil {
+		return errorResult("Unknown finding kind: %s", kind), nil
+	}
+
+	// Run the template and find findings matching the location.
+	allFindings := templates.RunTemplate(engine, tmpl)
+
+	var matched *templates.Finding
+	for i, f := range allFindings {
+		if f.Location.Line == line && strings.HasSuffix(f.Location.File, file) {
+			matched = &allFindings[i]
+			break
+		}
+	}
+
+	if matched == nil {
+		return jsonResult(map[string]any{
+			"found":   false,
+			"file":    file,
+			"line":    line,
+			"kind":    kind,
+			"message": fmt.Sprintf("No %s finding at %s:%d", kind, file, line),
+		}), nil
+	}
+
+	// Translate CFG block path to source lines.
+	var trace []map[string]any
+	if len(matched.Path) > 0 {
+		// Find the function containing the finding.
+		for _, fc := range engine.FuncNodes() {
+			funcPos := engine.Fset().Position(fc.Func.Pos())
+			funcEnd := engine.Fset().Position(fc.Func.End())
+			if !strings.HasSuffix(funcPos.Filename, file) {
+				continue
+			}
+			if line < funcPos.Line || line > funcEnd.Line {
+				continue
+			}
+
+			g := cfg.Build(engine.Fset(), fc.Func, fc.Info)
+			blockMap := map[int]*cfg.Block{}
+			for _, b := range g.Blocks {
+				blockMap[b.ID] = b
+			}
+
+			for _, blockID := range matched.Path {
+				block, ok := blockMap[blockID]
+				if !ok {
+					continue
+				}
+				step := map[string]any{
+					"block": blockID,
+				}
+				if block.Pos.IsValid() {
+					pos := engine.Fset().Position(block.Pos)
+					step["loc"] = fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+				}
+				// Summarize what happens in this block.
+				var stmtDescs []string
+				for _, node := range block.Nodes {
+					desc := printNode(engine.Fset(), node)
+					if len(desc) > 80 {
+						desc = desc[:77] + "..."
+					}
+					stmtDescs = append(stmtDescs, desc)
+				}
+				if len(stmtDescs) > 0 {
+					step["code"] = stmtDescs
+				}
+				if block.Kind == cfg.BlockBranch {
+					step["type"] = "branch"
+				}
+				trace = append(trace, step)
+			}
+			break
+		}
+	}
+
+	result := map[string]any{
+		"found": true,
+		"kind":  matched.Kind,
+		"sev":   matched.Severity,
+		"msg":   matched.Message,
+		"loc":   fmt.Sprintf("%s:%d:%d", matched.Location.File, matched.Location.Line, matched.Location.Column),
+	}
+	if matched.Suggestion != "" {
+		result["fix"] = matched.Suggestion
+	}
+	if len(trace) > 0 {
+		result["trace"] = trace
+	}
+
+	return jsonResult(result), nil
+}
+
+func (s *Server) templateForKind(kind string) templates.Template {
+	switch kind {
+	case "nil_deref":
+		return &templates.NilDeref{}
+	case "resource_leak":
+		return nil // needs acquire/release params, handled separately
+	case "unchecked_error":
+		return &templates.UncheckedError{}
+	case "lock_violation":
+		return &templates.LockViolation{CheckBlockingUnderLock: true}
+	case "blocking_under_lock":
+		return &templates.LockViolation{CheckBlockingUnderLock: true}
+	case "goroutine_leak":
+		return &templates.GoroutineLeak{}
+	case "race_condition":
+		return &templates.RaceCondition{}
+	case "context_misuse":
+		return &templates.ContextMisuse{FlagTodo: true}
+	case "defer_in_loop":
+		return &templates.DeferInLoop{}
+	case "error_swallow":
+		return &templates.ErrorSwallow{}
+	case "slice_append_race":
+		return &templates.SliceAppendRace{}
+	case "sql_injection":
+		return &templates.SQLInjection{}
+	}
+	return nil
 }
 
 func (s *Server) handleCheckInterface(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

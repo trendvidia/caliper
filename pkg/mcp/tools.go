@@ -843,7 +843,47 @@ func allTools() []mcpsdk.Tool {
 		findErrorSwallowTool,
 		findSliceAppendRaceTool,
 		checkInterfaceTool,
+		explainFindingTool,
 	}
+}
+
+var explainFindingTool = mcpsdk.Tool{
+	Name: "explain_finding",
+	Description: `Explain WHY a specific finding was reported at a given location.
+
+Re-runs the analysis at the specified file and line, then returns
+a human-readable trace showing the control-flow or data-flow path
+that led to the finding, with source line annotations.
+
+This helps verify true vs false positives by showing the exact
+reasoning path: "here's where the value was assigned, here's the
+path where it reaches the dereference without a nil check."
+
+USE THIS TOOL WHEN: a finding seems surprising and you want to
+understand the analyzer's reasoning, or when validating results
+before acting on them.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"file": map[string]any{
+				"type":        "string",
+				"description": "The file containing the finding.",
+			},
+			"line": map[string]any{
+				"type":        "integer",
+				"description": "The line number of the finding.",
+			},
+			"kind": map[string]any{
+				"type":        "string",
+				"description": "The finding kind to explain (e.g., 'nil_deref', 'lock_violation', 'resource_leak').",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to load. Defaults to current working directory.",
+			},
+		},
+		Required: []string{"file", "line", "kind"},
+	},
 }
 
 var checkInterfaceTool = mcpsdk.Tool{
