@@ -72,9 +72,13 @@ func (es *ErrorSwallow) checkAssign(ctx *TemplateContext, assign *ast.AssignStmt
 	// For single-return: _ = f() where f returns error.
 	if len(assign.Lhs) == 1 {
 		if isBlankIdent(assign.Lhs[0]) && isErrorType(callType) {
+			sev := "warning"
+			if isCleanupCall(call) {
+				sev = "info"
+			}
 			return []Finding{{
 				Kind:       "error_swallow",
-				Severity:   "warning",
+				Severity:   sev,
 				Message:    fmt.Sprintf("error from %s explicitly discarded", callDescription(call)),
 				Location:   ctx.Engine.LocationOf(assign.Pos()),
 				Suggestion: "Handle the error or document why it is safe to ignore",
@@ -96,9 +100,23 @@ func (es *ErrorSwallow) checkAssign(ctx *TemplateContext, assign *ast.AssignStmt
 		}
 		elemType := tuple.At(i).Type()
 		if isErrorType(elemType) {
+			// Determine severity based on whether the non-error value
+			// is used on subsequent lines (nil deref risk).
+			sev := "warning"
+			for j, lhs := range assign.Lhs {
+				if j == i || isBlankIdent(lhs) {
+					continue
+				}
+				if ident, ok := lhs.(*ast.Ident); ok {
+					if valueUsedAfterAssign(ctx, assign, ident.Name) {
+						sev = "error"
+						break
+					}
+				}
+			}
 			findings = append(findings, Finding{
 				Kind:       "error_swallow",
-				Severity:   "warning",
+				Severity:   sev,
 				Message:    fmt.Sprintf("error from %s explicitly discarded", callDescription(call)),
 				Location:   ctx.Engine.LocationOf(assign.Pos()),
 				Suggestion: "Handle the error or document why it is safe to ignore",
@@ -144,6 +162,67 @@ func (es *ErrorSwallow) checkDropped(ctx *TemplateContext, expr *ast.ExprStmt) [
 		Location:   ctx.Engine.LocationOf(expr.Pos()),
 		Suggestion: "Assign the return value and check the error, or use _ = f() to explicitly acknowledge the discard",
 	}}
+}
+
+// valueUsedAfterAssign checks if a variable assigned in a multi-return
+// is used in the statement immediately following the assignment within
+// the same block. This indicates the discarded error creates a nil deref risk.
+func valueUsedAfterAssign(ctx *TemplateContext, assign *ast.AssignStmt, varName string) bool {
+	// Walk the enclosing function body to find the assign, then check
+	// if the next statement references varName.
+	body := ctx.Func.Func.Body
+	if body == nil {
+		return false
+	}
+	return nextStmtUsesVar(body.List, assign, varName)
+}
+
+func nextStmtUsesVar(stmts []ast.Stmt, target *ast.AssignStmt, varName string) bool {
+	for i, stmt := range stmts {
+		if stmt.Pos() == target.Pos() && i+1 < len(stmts) {
+			return stmtReferencesVar(stmts[i+1], varName)
+		}
+		// Search nested blocks.
+		switch s := stmt.(type) {
+		case *ast.BlockStmt:
+			if nextStmtUsesVar(s.List, target, varName) {
+				return true
+			}
+		case *ast.IfStmt:
+			if s.Body != nil && nextStmtUsesVar(s.Body.List, target, varName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func stmtReferencesVar(stmt ast.Stmt, varName string) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if ident, ok := n.(*ast.Ident); ok && ident.Name == varName {
+			found = true
+		}
+		return !found
+	})
+	return found
+}
+
+// isCleanupCall checks if a call is a known cleanup/best-effort operation
+// where discarding the error is typically intentional.
+func isCleanupCall(call *ast.CallExpr) bool {
+	sel, ok := call.Fun.(*ast.SelectorExpr)
+	if !ok {
+		return false
+	}
+	switch sel.Sel.Name {
+	case "Close", "Remove", "RemoveAll", "Hostname":
+		return true
+	}
+	return false
 }
 
 func isBlankIdent(expr ast.Expr) bool {
