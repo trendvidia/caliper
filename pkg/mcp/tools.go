@@ -841,7 +841,39 @@ func allTools() []mcpsdk.Tool {
 		findCallSitesTool,
 		findDeferInLoopTool,
 		findErrorSwallowTool,
+		findSliceAppendRaceTool,
 	}
+}
+
+var findSliceAppendRaceTool = mcpsdk.Tool{
+	Name: "find_slice_append_race",
+	Description: `Find slices shared across goroutines via append.
+
+When multiple goroutines append to the same slice, the backing array
+can be aliased or reallocated concurrently, causing silent data
+corruption or lost elements. Unlike maps, concurrent slice append
+does NOT panic — it silently corrupts.
+
+WHAT IT CATCHES:
+  - Slice declared outside a goroutine, appended inside the closure
+  - var results []T; go func() { results = append(results, ...) }()
+
+WHAT IS SAFE:
+  - Slice declared inside the closure (local to the goroutine)
+  - Slice passed as a parameter to the closure
+  - Append protected by a mutex
+
+USE THIS TOOL WHEN: reviewing concurrent code that collects results
+from goroutines, or investigating intermittent data corruption.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+		},
+	},
 }
 
 var findErrorSwallowTool = mcpsdk.Tool{

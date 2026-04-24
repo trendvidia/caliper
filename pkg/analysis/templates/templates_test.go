@@ -776,6 +776,54 @@ func usesTodo() {
 }
 
 // --------------------------------------------------------------------------
+// SliceAppendRace tests
+// --------------------------------------------------------------------------
+
+func TestSliceAppendRace_SharedAppend(t *testing.T) {
+	src := `package testpkg
+
+func collector() {
+	var results []int
+	for i := 0; i < 10; i++ {
+		i := i
+		go func() {
+			results = append(results, i)
+		}()
+	}
+	_ = results
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SliceAppendRace{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "slice_append_race")
+	if len(races) == 0 {
+		t.Error("expected slice_append_race finding for shared slice append in goroutine")
+	}
+}
+
+func TestSliceAppendRace_LocalSlice(t *testing.T) {
+	// Slice declared inside the closure is safe.
+	src := `package testpkg
+
+func localSlice() {
+	go func() {
+		var results []int
+		results = append(results, 1)
+		_ = results
+	}()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SliceAppendRace{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "slice_append_race")
+	if len(races) > 0 {
+		t.Errorf("expected no slice_append_race for local slice, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+// --------------------------------------------------------------------------
 // ErrorSwallow tests
 // --------------------------------------------------------------------------
 
