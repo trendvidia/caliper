@@ -1389,16 +1389,68 @@ type compactFinding struct {
 	Fix string `json:"fix,omitempty"`
 }
 
-// findingsResult builds a compact JSON result from findings, applying config overrides.
-// Output uses short keys, relative paths, and omits empty/redundant fields
-// to minimize token count for LLM consumers.
+// findingsResult builds a JSON result from findings, applying config overrides.
+// Supports format modes via the optional request:
+//   - "compact" (default): short keys, relative paths, flat list
+//   - "summary": counts by severity only, no individual findings
+//   - "grouped": findings grouped by file for readability
 func (s *Server) findingsResult(findings []templates.Finding, req ...mcpsdk.CallToolRequest) *mcpsdk.CallToolResult {
 	findings = s.applySeverityOverrides(findings)
+
+	var format string
 	if len(req) > 0 {
 		findings = filterFindings(findings, req[0])
+		format = stringParam(req[0], "format")
 	}
 
-	// Find common root path for relative paths.
+	switch format {
+	case "summary":
+		return s.findingsSummary(findings)
+	case "grouped":
+		return s.findingsGrouped(findings)
+	default:
+		return s.findingsCompact(findings)
+	}
+}
+
+func (s *Server) findingsSummary(findings []templates.Finding) *mcpsdk.CallToolResult {
+	counts := map[string]int{}
+	for _, f := range findings {
+		counts[f.Severity]++
+	}
+	return jsonResult(map[string]any{
+		"total": len(findings),
+		"by_severity": counts,
+	})
+}
+
+func (s *Server) findingsGrouped(findings []templates.Finding) *mcpsdk.CallToolResult {
+	root := findCommonRoot(findings)
+	groups := map[string][]compactFinding{}
+	for _, f := range findings {
+		relFile := f.Location.File
+		if root != "" {
+			relFile = strings.TrimPrefix(f.Location.File, root+"/")
+		}
+		cf := compactFinding{
+			Loc: fmt.Sprintf(":%d:%d", f.Location.Line, f.Location.Column),
+			Sev: f.Severity,
+			Msg: f.Message,
+			Fix: f.Suggestion,
+		}
+		groups[relFile] = append(groups[relFile], cf)
+	}
+	result := map[string]any{
+		"total": len(findings),
+		"files": groups,
+	}
+	if root != "" {
+		result["root"] = root
+	}
+	return jsonResult(result)
+}
+
+func (s *Server) findingsCompact(findings []templates.Finding) *mcpsdk.CallToolResult {
 	root := findCommonRoot(findings)
 
 	compact := make([]compactFinding, len(findings))
