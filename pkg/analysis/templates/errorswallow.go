@@ -165,31 +165,39 @@ func (es *ErrorSwallow) checkDropped(ctx *TemplateContext, expr *ast.ExprStmt) [
 }
 
 // valueUsedAfterAssign checks if a variable assigned in a multi-return
-// is used in the statement immediately following the assignment within
-// the same block. This indicates the discarded error creates a nil deref risk.
+// is used in any subsequent statement within the same block. This indicates
+// the discarded error creates a nil deref risk — the value may be nil/zero
+// and is used without checking the error that would have signaled the failure.
 func valueUsedAfterAssign(ctx *TemplateContext, assign *ast.AssignStmt, varName string) bool {
-	// Walk the enclosing function body to find the assign, then check
-	// if the next statement references varName.
 	body := ctx.Func.Func.Body
 	if body == nil {
 		return false
 	}
-	return nextStmtUsesVar(body.List, assign, varName)
+	return anySubsequentStmtUsesVar(body.List, assign, varName)
 }
 
-func nextStmtUsesVar(stmts []ast.Stmt, target *ast.AssignStmt, varName string) bool {
-	for i, stmt := range stmts {
-		if stmt.Pos() == target.Pos() && i+1 < len(stmts) {
-			return stmtReferencesVar(stmts[i+1], varName)
+func anySubsequentStmtUsesVar(stmts []ast.Stmt, target *ast.AssignStmt, varName string) bool {
+	found := false
+	for _, stmt := range stmts {
+		if found {
+			// We're past the target — check if this statement uses the variable.
+			if stmtReferencesVar(stmt, varName) {
+				return true
+			}
+			continue
 		}
-		// Search nested blocks.
+		if stmt.Pos() == target.Pos() {
+			found = true
+			continue
+		}
+		// Search nested blocks for the target.
 		switch s := stmt.(type) {
 		case *ast.BlockStmt:
-			if nextStmtUsesVar(s.List, target, varName) {
+			if anySubsequentStmtUsesVar(s.List, target, varName) {
 				return true
 			}
 		case *ast.IfStmt:
-			if s.Body != nil && nextStmtUsesVar(s.Body.List, target, varName) {
+			if s.Body != nil && anySubsequentStmtUsesVar(s.Body.List, target, varName) {
 				return true
 			}
 		}
