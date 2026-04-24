@@ -91,13 +91,12 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 				if !ue.IncludeExplicit {
 					return nil
 				}
-				pos := ctx.Fset.Position(assign.Pos())
 				return &Finding{
 					Kind:     "unchecked_error",
 					Severity: "warning",
 					Message: fmt.Sprintf(
-						"error from %s explicitly ignored with blank identifier at %s:%d",
-						formatCall(call), pos.Filename, pos.Line,
+						"error from %s explicitly ignored with blank identifier",
+						formatCall(call),
 					),
 					Location:    ctx.Engine.LocationOf(assign.Pos()),
 					Explanation: "The error return value is assigned to _ and never handled.",
@@ -120,13 +119,12 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 		return nil
 	}
 
-	pos := ctx.Fset.Position(expr.Pos())
 	return &Finding{
 		Kind:     "unchecked_error",
 		Severity: "error",
 		Message: fmt.Sprintf(
-			"error from %s silently discarded at %s:%d",
-			formatCall(call), pos.Filename, pos.Line,
+			"error from %s silently discarded",
+			formatCall(call),
 		),
 		Location:    ctx.Engine.LocationOf(expr.Pos()),
 		Explanation: "The function returns an error but the return value is completely discarded.",
@@ -139,13 +137,12 @@ func (ue *UncheckedError) checkDeferStmt(ctx *TemplateContext, _ *cfg.Block, d *
 		return nil
 	}
 
-	pos := ctx.Fset.Position(d.Pos())
 	return &Finding{
 		Kind:     "unchecked_error",
 		Severity: "info",
 		Message: fmt.Sprintf(
-			"error from deferred %s not checked at %s:%d",
-			formatCall(d.Call), pos.Filename, pos.Line,
+			"error from deferred %s not checked",
+			formatCall(d.Call),
 		),
 		Location:    ctx.Engine.LocationOf(d.Pos()),
 		Explanation: "Error from a deferred call is not captured. This is common for Close() but may hide issues.",

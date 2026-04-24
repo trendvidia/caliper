@@ -61,14 +61,13 @@ func findDefersInLoops(ctx *TemplateContext, node ast.Node, inLoop bool, finding
 
 		case *ast.DeferStmt:
 			if inLoop {
-				pos := ctx.Fset.Position(stmt.Pos())
 				callDesc := deferCallDescription(stmt)
 				*findings = append(*findings, Finding{
 					Kind:     "defer_in_loop",
 					Severity: "warning",
 					Message: fmt.Sprintf(
-						"defer %s inside loop at %s:%d — deferred call accumulates until function returns, not loop iteration",
-						callDesc, pos.Filename, pos.Line,
+						"defer %s inside loop — deferred call accumulates until function returns, not loop iteration",
+						callDesc,
 					),
 					Location:   ctx.Engine.LocationOf(stmt.Pos()),
 					Suggestion: "Move the deferred resource into a helper function, or call the cleanup explicitly at the end of each iteration",

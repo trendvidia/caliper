@@ -1,7 +1,6 @@
 package templates
 
 import (
-	"fmt"
 	"go/ast"
 	"strings"
 )
@@ -129,14 +128,10 @@ func (cm *ContextMisuse) checkCallExpr(ctx *TemplateContext, expr ast.Expr, hasC
 		if !hasCtxParam {
 			return nil
 		}
-		pos := ctx.Fset.Position(call.Pos())
 		return &Finding{
 			Kind:     "context_misuse",
 			Severity: "warning",
-			Message: fmt.Sprintf(
-				"context.Background() used when parent context is available at %s:%d",
-				pos.Filename, pos.Line,
-			),
+			Message: "context.Background() used when parent context is available",
 			Location:    ctx.Engine.LocationOf(call.Pos()),
 			Explanation: "This function accepts a context.Context parameter but creates a new background context, ignoring cancellation signals from the caller.",
 			Suggestion:  "Use the parent context parameter instead of context.Background()",
@@ -146,14 +141,10 @@ func (cm *ContextMisuse) checkCallExpr(ctx *TemplateContext, expr ast.Expr, hasC
 		if !cm.FlagTodo {
 			return nil
 		}
-		pos := ctx.Fset.Position(call.Pos())
 		return &Finding{
 			Kind:     "context_misuse",
 			Severity: "warning",
-			Message: fmt.Sprintf(
-				"context.TODO() found at %s:%d",
-				pos.Filename, pos.Line,
-			),
+			Message: "context.TODO() found",
 			Location:    ctx.Engine.LocationOf(call.Pos()),
 			Explanation: "context.TODO() is intended as a placeholder during development and should be replaced before production.",
 			Suggestion:  "Replace context.TODO() with a proper context or context.Background()",

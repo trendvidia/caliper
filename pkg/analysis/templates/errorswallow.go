@@ -72,11 +72,10 @@ func (es *ErrorSwallow) checkAssign(ctx *TemplateContext, assign *ast.AssignStmt
 	// For single-return: _ = f() where f returns error.
 	if len(assign.Lhs) == 1 {
 		if isBlankIdent(assign.Lhs[0]) && isErrorType(callType) {
-			pos := ctx.Fset.Position(assign.Pos())
 			return []Finding{{
 				Kind:       "error_swallow",
 				Severity:   "warning",
-				Message:    fmt.Sprintf("error from %s explicitly discarded at %s:%d", callDescription(call), pos.Filename, pos.Line),
+				Message:    fmt.Sprintf("error from %s explicitly discarded", callDescription(call)),
 				Location:   ctx.Engine.LocationOf(assign.Pos()),
 				Suggestion: "Handle the error or document why it is safe to ignore",
 			}}
@@ -97,11 +96,10 @@ func (es *ErrorSwallow) checkAssign(ctx *TemplateContext, assign *ast.AssignStmt
 		}
 		elemType := tuple.At(i).Type()
 		if isErrorType(elemType) {
-			pos := ctx.Fset.Position(assign.Pos())
 			findings = append(findings, Finding{
 				Kind:       "error_swallow",
 				Severity:   "warning",
-				Message:    fmt.Sprintf("error from %s explicitly discarded at %s:%d", callDescription(call), pos.Filename, pos.Line),
+				Message:    fmt.Sprintf("error from %s explicitly discarded", callDescription(call)),
 				Location:   ctx.Engine.LocationOf(assign.Pos()),
 				Suggestion: "Handle the error or document why it is safe to ignore",
 			})
@@ -139,11 +137,10 @@ func (es *ErrorSwallow) checkDropped(ctx *TemplateContext, expr *ast.ExprStmt) [
 		return nil
 	}
 
-	pos := ctx.Fset.Position(expr.Pos())
 	return []Finding{{
 		Kind:       "error_swallow",
 		Severity:   "info",
-		Message:    fmt.Sprintf("error return from %s silently dropped at %s:%d", callDescription(call), pos.Filename, pos.Line),
+		Message:    fmt.Sprintf("error return from %s silently dropped", callDescription(call)),
 		Location:   ctx.Engine.LocationOf(expr.Pos()),
 		Suggestion: "Assign the return value and check the error, or use _ = f() to explicitly acknowledge the discard",
 	}}

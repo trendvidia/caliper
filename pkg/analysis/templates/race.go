@@ -151,13 +151,12 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 			}
 		}
 
-		pos := ctx.Fset.Position(goStmt.Pos())
 		findings = append(findings, Finding{
 			Kind:     "race_condition",
 			Severity: severity,
 			Message: fmt.Sprintf(
-				"potential data race on variable %q%s: shared between goroutine at %s:%d and enclosing function",
-				varName, typeDesc, pos.Filename, pos.Line,
+				"potential data race on variable %q%s: shared between goroutine and enclosing function",
+				varName, typeDesc,
 			),
 			Location:   ctx.Engine.LocationOf(goStmt.Pos()),
 			Suggestion: fmt.Sprintf("Pass %q as a parameter to the goroutine closure, or protect access with a sync.Mutex", varName),

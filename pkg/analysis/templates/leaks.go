@@ -69,13 +69,12 @@ func (rl *ResourceLeak) Analyze(ctx *TemplateContext) []Finding {
 			violations := cfg.Reachable(ctx.CFG, block, releasePred, rl.Severity)
 
 			if len(violations) > 0 {
-				pos := ctx.Fset.Position(node.Pos())
 				findings = append(findings, Finding{
 					Kind:     "resource_leak",
 					Severity: "warning",
 					Message: fmt.Sprintf(
-						"%s acquired at %s:%d but %s.%s() not called on %d path(s)",
-						rl.AcquirePattern.String(), pos.Filename, pos.Line,
+						"%s acquired but %s.%s() not called on %d path(s)",
+						rl.AcquirePattern.String(),
 						resourceVar, rl.ReleaseMethod, len(violations),
 					),
 					Location:    ctx.Engine.LocationOf(node.Pos()),

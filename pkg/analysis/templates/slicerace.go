@@ -64,13 +64,12 @@ func (sa *SliceAppendRace) Analyze(ctx *TemplateContext) []Finding {
 				}
 			}
 
-			pos := ctx.Fset.Position(target.pos)
 			findings = append(findings, Finding{
 				Kind:     "slice_append_race",
 				Severity: "error",
 				Message: fmt.Sprintf(
-					"concurrent append to shared slice %q at %s:%d — append is not goroutine-safe and can silently corrupt data",
-					target.name, pos.Filename, pos.Line,
+					"concurrent append to shared slice %q — append is not goroutine-safe and can silently corrupt data",
+					target.name,
 				),
 				Location:   ctx.Engine.LocationOf(goStmt.Pos()),
 				Suggestion: "Use a mutex to protect the append, or collect results via a channel",

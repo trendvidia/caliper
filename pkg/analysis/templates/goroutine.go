@@ -80,13 +80,12 @@ func (gl *GoroutineLeak) checkNode(ctx *TemplateContext, node ast.Node) []Findin
 			contextWarning = "; goroutine receives context.Context but body does not use ctx.Done()"
 		}
 
-		pos := ctx.Fset.Position(goStmt.Pos())
 		findings = append(findings, Finding{
 			Kind:     "goroutine_leak",
 			Severity: "warning",
 			Message: fmt.Sprintf(
-				"goroutine at %s:%d may never terminate: infinite loop without channel receive, context.Done(), or range-over-channel%s",
-				pos.Filename, pos.Line, contextWarning,
+				"goroutine may never terminate: infinite loop without channel receive, context.Done(), or range-over-channel%s",
+				contextWarning,
 			),
 			Location:   ctx.Engine.LocationOf(goStmt.Pos()),
 			Suggestion: "Add a termination mechanism: select on ctx.Done(), read from a done/quit channel, or use a for-range over a channel",

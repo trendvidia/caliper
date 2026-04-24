@@ -58,13 +58,12 @@ func (lv *LockViolation) checkMissingUnlock(ctx *TemplateContext) []Finding {
 			// Check AF(unlock) — unlock must happen on ALL paths.
 			violations := cfg.Reachable(ctx.CFG, block, unlockPred, cfg.AllPaths)
 			if len(violations) > 0 {
-				pos := ctx.Fset.Position(node.Pos())
 				findings = append(findings, Finding{
 					Kind:     "lock_violation",
 					Severity: "error",
 					Message: fmt.Sprintf(
-						"%s.%s() at %s:%d without matching %s() on %d path(s)",
-						mutexName, lockKind, pos.Filename, pos.Line,
+						"%s.%s() without matching %s() on %d path(s)",
+						mutexName, lockKind,
 						unlockMethod, len(violations),
 					),
 					Location:    ctx.Engine.LocationOf(node.Pos()),
@@ -119,13 +118,12 @@ func (lv *LockViolation) checkBlockingUnderLock(ctx *TemplateContext) []Finding 
 
 			violations := cfg.NeverBetween(ctx.CFG, lockPred, unlockPred, blockingPred)
 			for _, v := range violations {
-				pos := ctx.Fset.Position(node.Pos())
 				findings = append(findings, Finding{
 					Kind:     "blocking_under_lock",
 					Severity: "warning",
 					Message: fmt.Sprintf(
-						"potentially blocking operation while %s.%s() is held at %s:%d",
-						mutexName, lockKind, pos.Filename, pos.Line,
+						"potentially blocking operation while %s.%s() is held",
+						mutexName, lockKind,
 					),
 					Location:    ctx.Engine.LocationOf(node.Pos()),
 					Explanation: "Holding a lock across a blocking operation can cause deadlocks or high contention.",

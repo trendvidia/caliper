@@ -88,13 +88,12 @@ func (si *SQLInjection) checkNode(ctx *TemplateContext, node ast.Node) *Finding 
 		return nil
 	}
 
-	pos := ctx.Fset.Position(queryArg.Pos())
 	return &Finding{
 		Kind:     "sql_injection",
 		Severity: severity,
 		Message: fmt.Sprintf(
-			"potential SQL injection: query string built via %s at %s:%d",
-			describeExpr(queryArg), pos.Filename, pos.Line,
+			"potential SQL injection: query string built via %s",
+			describeExpr(queryArg),
 		),
 		Location:   ctx.Engine.LocationOf(queryArg.Pos()),
 		Suggestion: "Use parameterized queries with ? placeholders instead of string concatenation",
