@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
@@ -84,14 +85,23 @@ func (nd *NilDeref) Analyze(ctx *TemplateContext) []Finding {
 		}
 
 		guardPred := func(_ *cfg.Block, node ast.Node) bool {
-			return condReferencesVar(node, guardName)
+			// Check if the guard variable (err/ok) is referenced in a condition.
+			if condReferencesVar(node, guardName) {
+				return true
+			}
+			// Also check if the value variable is compared to nil,
+			// e.g., `if x != nil { x.Method() }` or `x != nil && x.Field`.
+			if isNilCheckOnVar(node, valName) {
+				return true
+			}
+			return false
 		}
 
 		derefPred := func(_ *cfg.Block, node ast.Node) bool {
 			return nodeDereferencesVar(node, valName)
 		}
 
-		violations := checkGuardBeforeDeref(ctx.CFG, assignBlock, guardName, guardPred, derefPred)
+		violations := checkGuardBeforeDeref(ctx.CFG, assignBlock, guardName, valName, guardPred, derefPred)
 
 		for _, v := range violations {
 			pos := ctx.Fset.Position(assign.Pos())
@@ -205,6 +215,56 @@ func branchBlockReferencesVar(block *cfg.Block, varName string) bool {
 	return false
 }
 
+// branchBlockHasNilCheck checks if a BlockBranch block's condition
+// compares the given variable against nil. This handles patterns like
+// `if x != nil { x.Method() }` where the value itself is the guard.
+func branchBlockHasNilCheck(block *cfg.Block, varName string) bool {
+	if block.Kind != cfg.BlockBranch {
+		return false
+	}
+	for _, node := range block.Nodes {
+		if isNilCheckOnVar(node, varName) {
+			return true
+		}
+	}
+	return false
+}
+
+// isNilCheckOnVar checks if a node is a comparison of varName against nil,
+// including inside short-circuit && expressions like `x != nil && x.Field`.
+func isNilCheckOnVar(node ast.Node, varName string) bool {
+	binExpr, ok := node.(*ast.BinaryExpr)
+	if !ok {
+		return false
+	}
+	// x != nil, x == nil, nil != x, nil == x
+	if binExpr.Op == token.NEQ || binExpr.Op == token.EQL {
+		if isIdentNamed(binExpr.X, varName) && isNilLit(binExpr.Y) {
+			return true
+		}
+		if isIdentNamed(binExpr.Y, varName) && isNilLit(binExpr.X) {
+			return true
+		}
+	}
+	// x != nil && ... (left side of short-circuit AND)
+	if binExpr.Op == token.LAND {
+		if isNilCheckOnVar(binExpr.X, varName) || isNilCheckOnVar(binExpr.Y, varName) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIdentNamed(expr ast.Expr, name string) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == name
+}
+
+func isNilLit(expr ast.Expr) bool {
+	ident, ok := expr.(*ast.Ident)
+	return ok && ident.Name == "nil"
+}
+
 func exprReferencesIdent(expr ast.Expr, name string) bool {
 	found := false
 	ast.Inspect(expr, func(n ast.Node) bool {
@@ -250,7 +310,7 @@ func nodeDereferencesVar(node ast.Node, varName string) bool {
 // checkGuardBeforeDeref does a BFS from start, tracking whether the guard
 // predicate was seen. Reports violations where derefPred is reached
 // without the guard.
-func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardVarName string, guardPred, derefPred cfg.NodePredicate) []cfg.PathResult {
+func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardVarName, valVarName string, guardPred, derefPred cfg.NodePredicate) []cfg.PathResult {
 	var violations []cfg.PathResult
 
 	type state struct {
@@ -276,8 +336,9 @@ func checkGuardBeforeDeref(g *cfg.Graph, start *cfg.Block, guardVarName string, 
 		}
 		// Also check if this is a branch block whose condition directly
 		// references the guard variable (handles bare `if ok { }` where
-		// the CFG branch block contains just the *ast.Ident).
-		if !guarded && branchBlockReferencesVar(cur.block, guardVarName) {
+		// the CFG branch block contains just the *ast.Ident), or checks
+		// the value variable against nil (e.g., `if x != nil { }`).
+		if !guarded && (branchBlockReferencesVar(cur.block, guardVarName) || branchBlockHasNilCheck(cur.block, valVarName)) {
 			guarded = true
 		}
 

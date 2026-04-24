@@ -39,6 +39,11 @@ func (lv *LockViolation) checkMissingUnlock(ctx *TemplateContext) []Finding {
 				continue
 			}
 
+			// Only process lock acquisitions, not unlocks.
+			if lockKind != "Lock" && lockKind != "RLock" {
+				continue
+			}
+
 			// Build predicate for matching unlock.
 			unlockMethod := "Unlock"
 			if lockKind == "RLock" {
@@ -86,6 +91,11 @@ func (lv *LockViolation) checkBlockingUnderLock(ctx *TemplateContext) []Finding 
 		for _, node := range block.Nodes {
 			mutexName, lockKind := extractLockCall(node)
 			if mutexName == "" {
+				continue
+			}
+
+			// Only process lock acquisitions, not unlocks.
+			if lockKind != "Lock" && lockKind != "RLock" {
 				continue
 			}
 

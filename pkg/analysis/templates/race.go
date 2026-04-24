@@ -100,16 +100,16 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 			continue
 		}
 
-		// Skip if the variable is only read (not written) after the go
-		// statement AND is an immutable value type (string, int, bool, etc.).
-		// Read-only captures of value types are safe — but loop variables
-		// are always mutated by the loop, so don't skip those.
+		// Skip if the variable is not written on either side (goroutine
+		// closure or statements after go). Read-only captures are safe
+		// regardless of type — but loop variables are always mutated by
+		// the loop, so don't skip those.
 		isLoopVar := enclosingLoop != nil && isLoopVariable(enclosingLoop, varName)
-		if !isLoopVar && ctx.Func.Info != nil {
-			if obj := lookupIdent(ctx, varName); obj != nil {
-				if isImmutableValueType(obj.Type()) && !identWrittenInStmts(stmtsAfterGo, varName) {
-					continue
-				}
+		if !isLoopVar {
+			writtenAfterGo := identWrittenInStmts(stmtsAfterGo, varName)
+			writtenInClosure := identWrittenInNode(funcLit.Body, varName)
+			if !writtenAfterGo && !writtenInClosure {
+				continue
 			}
 		}
 
@@ -583,6 +583,44 @@ func isImmutableValueType(t types.Type) bool {
 		types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64, types.Uintptr,
 		types.Float32, types.Float64, types.Complex64, types.Complex128:
 		return true
+	}
+	return false
+}
+
+// identWrittenInNode checks if a variable is assigned to (written) in any
+// part of an AST subtree. Covers direct assignment (x = ...), field
+// assignment (x.field = ...), and index assignment (x[key] = ...).
+func identWrittenInNode(node ast.Node, name string) bool {
+	found := false
+	ast.Inspect(node, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		assign, ok := n.(*ast.AssignStmt)
+		if !ok {
+			return true
+		}
+		for _, lhs := range assign.Lhs {
+			if lhsReferencesVar(lhs, name) {
+				found = true
+				return false
+			}
+		}
+		return true
+	})
+	return found
+}
+
+// lhsReferencesVar checks if an LHS expression refers to a variable,
+// including through selectors and index expressions (e.g., x.field, x[key]).
+func lhsReferencesVar(expr ast.Expr, name string) bool {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		return e.Name == name
+	case *ast.SelectorExpr:
+		return lhsReferencesVar(e.X, name)
+	case *ast.IndexExpr:
+		return lhsReferencesVar(e.X, name)
 	}
 	return false
 }

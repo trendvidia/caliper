@@ -552,6 +552,50 @@ func typeAssertUnchecked(v interface{}, flag bool) {
 	}
 }
 
+func TestNilDeref_ValueNilCheck(t *testing.T) {
+	// Value checked for nil directly: x, _ := expr.(Type); if x != nil { x.Use() }
+	src := `package testpkg
+
+type Closer interface{ Close() }
+
+func valueNilCheck(v interface{}) {
+	c, _ := v.(Closer)
+	if c != nil {
+		c.Close()
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &NilDeref{}
+	findings := RunTemplate(engine, tmpl)
+	nils := findingsOfKind(findings, "nil_deref")
+	if len(nils) > 0 {
+		t.Errorf("expected no nil deref when value is nil-checked, got %d: %s", len(nils), nils[0].Message)
+	}
+}
+
+func TestNilDeref_ShortCircuitNilCheck(t *testing.T) {
+	// Short-circuit && with nil check: x != nil && x.Field
+	src := `package testpkg
+
+import "net/url"
+
+func shortCircuit() {
+	u, _ := url.Parse("http://example.com")
+	if u != nil && u.Scheme == "https" {
+		_ = u.Host
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &NilDeref{}
+	findings := RunTemplate(engine, tmpl)
+	nils := findingsOfKind(findings, "nil_deref")
+	if len(nils) > 0 {
+		t.Errorf("expected no nil deref for x != nil && x.Field short-circuit, got %d: %s", len(nils), nils[0].Message)
+	}
+}
+
 // --------------------------------------------------------------------------
 // SQLInjection tests
 // --------------------------------------------------------------------------
@@ -951,5 +995,33 @@ func chanSync() {
 	races := findingsOfKind(findings, "race_condition")
 	if len(races) > 0 {
 		t.Errorf("expected no race for channel-synchronized variable, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestRaceCondition_ReadOnlyPointerCapture(t *testing.T) {
+	// Read-only pointer capture — goroutine calls methods but doesn't
+	// reassign the variable. Not a race.
+	src := `package testpkg
+
+import "fmt"
+
+type Watcher struct{ Name string }
+
+func (w *Watcher) Watch() string { return w.Name }
+
+func readOnlyPointer() {
+	w := &Watcher{Name: "test"}
+	go func() {
+		fmt.Println(w.Watch())
+	}()
+	fmt.Println(w.Watch())
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race for read-only pointer capture, got %d: %s", len(races), races[0].Message)
 	}
 }
