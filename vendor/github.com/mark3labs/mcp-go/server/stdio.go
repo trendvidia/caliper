@@ -158,13 +158,16 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 			return err
 		}
 
-		if err := s.processMessage(ctx, line, stdout); err != nil {
-			if err == io.EOF {
-				return nil
+		// Process each message concurrently so that parallel tool calls
+		// from the client don't queue behind each other. The writer
+		// must be safe for concurrent use (e.g., wrapped in a mutex).
+		go func(msg string) {
+			if err := s.processMessage(ctx, msg, stdout); err != nil {
+				if err != io.EOF {
+					s.errLogger.Printf("Error handling message: %v", err)
+				}
 			}
-			s.errLogger.Printf("Error handling message: %v", err)
-			return err
-		}
+		}(line)
 	}
 }
 
