@@ -103,6 +103,7 @@ func (s *Server) registerTools() {
 	s.mcp.AddTool(findDeferInLoopTool, s.handleFindDeferInLoop)
 	s.mcp.AddTool(findErrorSwallowTool, s.handleFindErrorSwallow)
 	s.mcp.AddTool(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
+	s.mcp.AddTool(checkInterfaceTool, s.handleCheckInterface)
 }
 
 // defaultPath returns the given path or the configured default.
@@ -1117,6 +1118,21 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 		"total":            len(hits),
 		"hits":             hits,
 	}), nil
+}
+
+func (s *Server) handleCheckInterface(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	typeName := stringParam(req, "type_name")
+	ifaceName := stringParam(req, "interface_name")
+	path := stringParam(req, "path")
+	path = s.defaultPath(path)
+
+	engine, err := s.getEngine(path)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+
+	result := templates.CheckInterfaceSatisfaction(engine, typeName, ifaceName)
+	return jsonResult(result), nil
 }
 
 func (s *Server) handleFindSliceAppendRace(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

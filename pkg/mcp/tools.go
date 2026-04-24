@@ -842,7 +842,46 @@ func allTools() []mcpsdk.Tool {
 		findDeferInLoopTool,
 		findErrorSwallowTool,
 		findSliceAppendRaceTool,
+		checkInterfaceTool,
 	}
+}
+
+var checkInterfaceTool = mcpsdk.Tool{
+	Name: "check_interface",
+	Description: `Check whether a concrete type satisfies a given interface.
+
+Reports missing methods and signature mismatches. Checks both T and *T.
+
+EXAMPLES:
+  Check if MyWidget implements fyne.Widget:
+    type_name: "MyWidget"
+    interface_name: "fyne.io/fyne/v2.Widget"
+
+  Check if a type implements io.Reader:
+    type_name: "mypackage.Buffer"
+    interface_name: "io.Reader"
+
+USE THIS TOOL WHEN: verifying interface contracts after refactoring,
+checking if a type implements a framework interface, or auditing
+interface compliance across a codebase.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"type_name": map[string]any{
+				"type":        "string",
+				"description": "Fully qualified concrete type name. Examples: 'MyWidget', 'mypackage.Config'",
+			},
+			"interface_name": map[string]any{
+				"type":        "string",
+				"description": "Fully qualified interface name. Examples: 'io.Reader', 'fyne.io/fyne/v2.Widget'",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to load. Defaults to current working directory.",
+			},
+		},
+		Required: []string{"type_name", "interface_name"},
+	},
 }
 
 var findSliceAppendRaceTool = mcpsdk.Tool{

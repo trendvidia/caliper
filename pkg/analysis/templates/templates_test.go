@@ -776,6 +776,45 @@ func usesTodo() {
 }
 
 // --------------------------------------------------------------------------
+// CheckInterfaceSatisfaction tests
+// --------------------------------------------------------------------------
+
+func TestCheckInterface_Satisfies(t *testing.T) {
+	src := `package testpkg
+
+import "io"
+
+type MyReader struct{}
+
+func (r *MyReader) Read(p []byte) (int, error) {
+	return 0, io.EOF
+}
+`
+	engine := setupProject(t, src)
+	result := CheckInterfaceSatisfaction(engine, "MyReader", "io.Reader")
+	if !result.Satisfies {
+		t.Errorf("expected MyReader to satisfy io.Reader, got missing: %v", result.Missing)
+	}
+}
+
+func TestCheckInterface_MissingMethod(t *testing.T) {
+	src := `package testpkg
+
+import _ "io"
+
+type Incomplete struct{}
+`
+	engine := setupProject(t, src)
+	result := CheckInterfaceSatisfaction(engine, "Incomplete", "io.Reader")
+	if result.Satisfies {
+		t.Error("expected Incomplete to NOT satisfy io.Reader")
+	}
+	if len(result.Missing) == 0 {
+		t.Error("expected missing methods reported")
+	}
+}
+
+// --------------------------------------------------------------------------
 // SliceAppendRace tests
 // --------------------------------------------------------------------------
 
