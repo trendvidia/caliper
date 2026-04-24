@@ -86,6 +86,21 @@ func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
 			sem <- struct{}{}
 			defer func() { <-sem }()
 
+			// Recover from panics in individual function analysis so a
+			// single bad function doesn't crash the entire server.
+			defer func() {
+				if r := recover(); r != nil {
+					mu.Lock()
+					allFindings = append(allFindings, Finding{
+						Kind:     tmpl.Name(),
+						Severity: "error",
+						Message:  fmt.Sprintf("internal error analyzing function: %v", r),
+						Location: engine.LocationOf(fc.Func.Pos()),
+					})
+					mu.Unlock()
+				}
+			}()
+
 			ctx := BuildContext(engine, fc)
 			findings := tmpl.Analyze(ctx)
 

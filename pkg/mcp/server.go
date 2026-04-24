@@ -76,35 +76,53 @@ func (s *Server) Run(ctx context.Context) error {
 	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
+// safeHandler wraps a tool handler with panic recovery so that a crash in
+// one analysis doesn't kill the entire MCP server process.
+func safeHandler(fn mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcpsdk.CallToolRequest) (result *mcpsdk.CallToolResult, err error) {
+		defer func() {
+			if r := recover(); r != nil {
+				result = errorResult("internal error: %v", r)
+				err = nil
+			}
+		}()
+		return fn(ctx, req)
+	}
+}
+
 func (s *Server) registerTools() {
-	s.mcp.AddTool(findPatternTool, s.handleFindPattern)
-	s.mcp.AddTool(findTypeUsageTool, s.handleFindTypeUsage)
-	s.mcp.AddTool(findResourceLeakTool, s.handleFindResourceLeak)
-	s.mcp.AddTool(findUncheckedErrorTool, s.handleFindUncheckedError)
-	s.mcp.AddTool(findLockViolationTool, s.handleFindLockViolation)
-	s.mcp.AddTool(findNilDerefTool, s.handleFindNilDeref)
-	s.mcp.AddTool(checkPathPropertyTool, s.handleCheckPathProperty)
-	s.mcp.AddTool(applyTransformTool, s.handleApplyTransform)
-	s.mcp.AddTool(migrateAPITool, s.handleMigrateAPI)
-	s.mcp.AddTool(addMissingCleanupTool, s.handleAddMissingCleanup)
-	s.mcp.AddTool(explainMatchTool, s.handleExplainMatch)
-	s.mcp.AddTool(listEquivalencesTool, s.handleListEquivalences)
+	add := func(tool mcpsdk.Tool, handler mcpserver.ToolHandlerFunc) {
+		s.mcp.AddTool(tool, safeHandler(handler))
+	}
+
+	add(findPatternTool, s.handleFindPattern)
+	add(findTypeUsageTool, s.handleFindTypeUsage)
+	add(findResourceLeakTool, s.handleFindResourceLeak)
+	add(findUncheckedErrorTool, s.handleFindUncheckedError)
+	add(findLockViolationTool, s.handleFindLockViolation)
+	add(findNilDerefTool, s.handleFindNilDeref)
+	add(checkPathPropertyTool, s.handleCheckPathProperty)
+	add(applyTransformTool, s.handleApplyTransform)
+	add(migrateAPITool, s.handleMigrateAPI)
+	add(addMissingCleanupTool, s.handleAddMissingCleanup)
+	add(explainMatchTool, s.handleExplainMatch)
+	add(listEquivalencesTool, s.handleListEquivalences)
 
 	// Phase 5: Pattern language.
-	s.mcp.AddTool(runPatternsTool, s.handleRunPatterns)
+	add(runPatternsTool, s.handleRunPatterns)
 
-	// Phase 4: Advanced analysis.
-	s.mcp.AddTool(findGoroutineLeakTool, s.handleFindGoroutineLeak)
-	s.mcp.AddTool(findSQLInjectionTool, s.handleFindSQLInjection)
-	s.mcp.AddTool(findRaceConditionTool, s.handleFindRaceCondition)
-	s.mcp.AddTool(findContextMisuseTool, s.handleFindContextMisuse)
-	s.mcp.AddTool(findTaintFlowTool, s.handleFindTaintFlow)
-	s.mcp.AddTool(findCallSitesTool, s.handleFindCallSites)
-	s.mcp.AddTool(findDeferInLoopTool, s.handleFindDeferInLoop)
-	s.mcp.AddTool(findErrorSwallowTool, s.handleFindErrorSwallow)
-	s.mcp.AddTool(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
-	s.mcp.AddTool(checkInterfaceTool, s.handleCheckInterface)
-	s.mcp.AddTool(explainFindingTool, s.handleExplainFinding)
+	// Phase 4+: Advanced analysis.
+	add(findGoroutineLeakTool, s.handleFindGoroutineLeak)
+	add(findSQLInjectionTool, s.handleFindSQLInjection)
+	add(findRaceConditionTool, s.handleFindRaceCondition)
+	add(findContextMisuseTool, s.handleFindContextMisuse)
+	add(findTaintFlowTool, s.handleFindTaintFlow)
+	add(findCallSitesTool, s.handleFindCallSites)
+	add(findDeferInLoopTool, s.handleFindDeferInLoop)
+	add(findErrorSwallowTool, s.handleFindErrorSwallow)
+	add(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
+	add(checkInterfaceTool, s.handleCheckInterface)
+	add(explainFindingTool, s.handleExplainFinding)
 }
 
 // defaultPath returns the given path or the configured default.
