@@ -14,6 +14,7 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"os"
 	"path/filepath"
 	"strings"
 
@@ -72,7 +73,7 @@ func NewServer() (*Server, error) {
 // Run starts the MCP server on stdio.
 func (s *Server) Run(ctx context.Context) error {
 	stdio := mcpserver.NewStdioServer(s.mcp)
-	return stdio.Listen(ctx, nil, nil)
+	return stdio.Listen(ctx, os.Stdin, os.Stdout)
 }
 
 func (s *Server) registerTools() {
