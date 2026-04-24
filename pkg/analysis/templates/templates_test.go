@@ -776,6 +776,46 @@ func usesTodo() {
 }
 
 // --------------------------------------------------------------------------
+// Suppression tests
+// --------------------------------------------------------------------------
+
+func TestSuppression_CaliperIgnore(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func suppressed() {
+	_, _ = os.Open("file.txt") //caliper:ignore error_swallow
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ErrorSwallow{}
+	findings := RunTemplate(engine, tmpl)
+	errs := findingsOfKind(findings, "error_swallow")
+	if len(errs) > 0 {
+		t.Errorf("expected finding to be suppressed by //caliper:ignore, got %d: %s", len(errs), errs[0].Message)
+	}
+}
+
+func TestSuppression_NotSuppressed(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func notSuppressed() {
+	_, _ = os.Open("file.txt")
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &ErrorSwallow{}
+	findings := RunTemplate(engine, tmpl)
+	errs := findingsOfKind(findings, "error_swallow")
+	if len(errs) == 0 {
+		t.Error("expected error_swallow finding when not suppressed")
+	}
+}
+
+// --------------------------------------------------------------------------
 // CheckInterfaceSatisfaction tests
 // --------------------------------------------------------------------------
 

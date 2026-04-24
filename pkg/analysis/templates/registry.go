@@ -7,8 +7,10 @@
 package templates
 
 import (
+	"fmt"
 	"go/token"
 	"runtime"
+	"strings"
 	"sync"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
@@ -66,7 +68,7 @@ func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
 			return nil
 		}
 		ctx := BuildContext(engine, funcs[0])
-		return tmpl.Analyze(ctx)
+		return filterSuppressed(engine, tmpl.Analyze(ctx))
 	}
 
 	var (
@@ -96,5 +98,64 @@ func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
 	}
 
 	wg.Wait()
+
+	// Filter out suppressed findings (//caliper:ignore).
+	allFindings = filterSuppressed(engine, allFindings)
+
 	return allFindings
+}
+
+// filterSuppressed removes findings on lines that have a //caliper:ignore comment.
+// Supports rule-specific suppression: //caliper:ignore nil_deref
+func filterSuppressed(engine *analysis.Engine, findings []Finding) []Finding {
+	if len(findings) == 0 {
+		return findings
+	}
+
+	// Build a set of suppressed locations: file:line → set of suppressed rules (empty = all).
+	type suppression struct {
+		rules map[string]bool // empty means suppress all
+	}
+	suppressions := map[string]*suppression{}
+
+	for _, pkg := range engine.Packages() {
+		for _, file := range pkg.Syntax {
+			for _, cg := range file.Comments {
+				for _, c := range cg.List {
+					text := strings.TrimSpace(strings.TrimPrefix(c.Text, "//"))
+					if !strings.HasPrefix(text, "caliper:ignore") {
+						continue
+					}
+
+					pos := engine.Fset().Position(c.Pos())
+					key := fmt.Sprintf("%s:%d", pos.Filename, pos.Line)
+
+					sup := &suppression{rules: map[string]bool{}}
+					rest := strings.TrimSpace(strings.TrimPrefix(text, "caliper:ignore"))
+					if rest != "" {
+						for _, rule := range strings.Fields(rest) {
+							sup.rules[rule] = true
+						}
+					}
+					suppressions[key] = sup
+				}
+			}
+		}
+	}
+
+	if len(suppressions) == 0 {
+		return findings
+	}
+
+	var filtered []Finding
+	for _, f := range findings {
+		key := fmt.Sprintf("%s:%d", f.Location.File, f.Location.Line)
+		if sup, ok := suppressions[key]; ok {
+			if len(sup.rules) == 0 || sup.rules[f.Kind] {
+				continue // suppressed
+			}
+		}
+		filtered = append(filtered, f)
+	}
+	return filtered
 }
