@@ -68,12 +68,13 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		Dir: dir,
 	}
 
-	// For stdlib (GOROOT/src), set GOROOT env and don't set Dir
-	// since the stdlib isn't a regular module.
+	// For stdlib (GOROOT/src), set GOROOT env, disable go.work
+	// (a workspace file above the target would interfere), and
+	// don't set Dir since the stdlib isn't a regular module.
 	if isGoRootSrc(dir) {
 		goroot := filepath.Dir(dir) // /path/to/go/libexec/src → /path/to/go/libexec
 		cfg.Dir = ""
-		cfg.Env = append(os.Environ(), "GOROOT="+goroot)
+		cfg.Env = append(os.Environ(), "GOROOT="+goroot, "GOWORK=off")
 	}
 
 	// Apply build tags.
