@@ -352,8 +352,19 @@ func (e *Engine) LocationOf(pos token.Pos) FileLocation {
 	p := e.fset.Position(pos)
 	file := p.Filename
 	// Remap system GOROOT paths to fork paths when using overlay.
-	if e.opts.pathRemap != nil && strings.HasPrefix(file, e.opts.pathRemap.from) {
-		file = e.opts.pathRemap.to + file[len(e.opts.pathRemap.from):]
+	if e.opts.pathRemap != nil {
+		from := e.opts.pathRemap.from
+		// Ensure consistent prefix matching with trailing separator.
+		if !strings.HasSuffix(from, string(filepath.Separator)) {
+			from += string(filepath.Separator)
+		}
+		if strings.HasPrefix(file, from) {
+			to := e.opts.pathRemap.to
+			if !strings.HasSuffix(to, string(filepath.Separator)) {
+				to += string(filepath.Separator)
+			}
+			file = to + file[len(from):]
+		}
 	}
 	return FileLocation{
 		File:   file,
