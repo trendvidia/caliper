@@ -54,38 +54,89 @@ For team-wide configuration, add a `.mcp.json` file to your project root:
 
 ## Tools
 
-Caliper exposes the following MCP tools:
+Caliper exposes 24 MCP tools across six categories.
 
-**Pattern Matching**
-- `find_pattern` — match code using AST patterns with metavariables
-- `find_type_usage` — find all usages of a specific type
-- `list_equivalences` — show semantic equivalences used in matching
+### Bug Detection
 
-**Control Flow Analysis**
-- `find_resource_leak` — detect missing cleanup on code paths
-- `find_unchecked_error` — find ignored/unchecked errors
-- `find_lock_violation` — detect mutex discipline violations
-- `find_nil_deref` — find nil pointer dereferences
-- `check_path_property` — generic path property checker
+| Tool | Description |
+|---|---|
+| `find_nil_deref` | Nil pointer dereferences via guard tracking (error/ok/nil checks) |
+| `find_resource_leak` | Missing cleanup on all code paths (files, connections, locks) |
+| `find_unchecked_error` | Errors assigned but never checked before overwrite |
+| `find_error_swallow` | Explicitly discarded errors (`_ = f()`, `f, _ := os.Open()`) with severity tiers |
+| `find_lock_violation` | Mutex discipline: missing unlock, double lock, RLock/RUnlock pairs |
+| `find_defer_in_loop` | Defer inside for/range loops (accumulates until function returns) |
+| `find_context_misuse` | `context.Background()` when parent context available, `context.TODO()` in production |
 
-**Code Transformation**
-- `apply_transform` — rewrite code matching a pattern
-- `migrate_api` — multi-rule API migrations with import updates
-- `add_missing_cleanup` — auto-insert missing defer statements
+### Concurrency Analysis
 
-**Advanced Analysis**
-- `find_goroutine_leak` — detect leaked goroutines
-- `find_sql_injection` — find SQL injection vulnerabilities
-- `find_race_condition` — detect data races in concurrent code
-- `find_context_misuse` — find context.Background() misuse
-- `find_taint_flow` — trace untrusted data to sensitive sinks
-- `find_call_sites` — find all callers of a function
+| Tool | Description |
+|---|---|
+| `find_race_condition` | Data races from goroutine closure captures, with sync.WaitGroup/Once/channel/mutex awareness |
+| `find_goroutine_leak` | Goroutines with infinite loops but no termination mechanism |
+| `find_slice_append_race` | Concurrent `append` to shared slices (silent data corruption) |
 
-**Pattern Language**
-- `run_patterns` — load and execute .gcl rule files against a codebase
+### Security
 
-**Debugging**
-- `explain_match` — debug why a pattern did/didn't match
+| Tool | Description |
+|---|---|
+| `find_sql_injection` | String concatenation into SQL queries |
+| `find_taint_flow` | Trace untrusted data (HTTP requests) to sensitive sinks (SQL, exec) across function boundaries |
+
+### Pattern Matching & Exploration
+
+| Tool | Description |
+|---|---|
+| `find_pattern` | Structural AST pattern matching with metavariables (`$x.Close()`, `if $err != nil { ... }`) |
+| `find_type_usage` | All usages of a type: instantiation, argument, return, field, type assertion |
+| `find_call_sites` | All callers of a function via call graph analysis (CHA/RTA/VTA) |
+| `check_path_property` | Generic CFG path properties: always-before, always-after, never-between, dominates |
+| `check_interface` | Verify a type satisfies an interface, report missing methods and signature mismatches |
+| `list_equivalences` | Show semantic equivalences used in pattern matching |
+
+### Code Transformation
+
+| Tool | Description |
+|---|---|
+| `apply_transform` | AST-level rewrite: match a pattern, replace with another, preserving metavariable bindings |
+| `migrate_api` | Multi-rule API migrations with import path updates |
+| `add_missing_cleanup` | Auto-insert missing `defer` statements for acquired resources |
+
+### Pattern Language & Debugging
+
+| Tool | Description |
+|---|---|
+| `run_patterns` | Load and execute `.gcl` rule files against a codebase |
+| `explain_match` | Debug why a pattern did/didn't match at a specific location |
+| `explain_finding` | Re-run analysis at a location, show control-flow trace with source annotations |
+
+## Output Formats
+
+All analysis tools support a `format` parameter:
+
+| Format | Use Case |
+|---|---|
+| `compact` | Default. Short keys, relative paths, minimal tokens for LLM consumption |
+| `summary` | Severity counts only — triage and overview |
+| `grouped` | Findings grouped by file — human readability |
+| `sarif` | SARIF v2.1.0 — GitHub Code Scanning and CI integration |
+
+Additional output parameters:
+
+- `max_findings` — limit output to N findings
+- `min_severity` — filter by `info`, `warning`, or `error`
+
+Consecutive identical findings in the same file are automatically grouped with a count and line range (e.g., `"contain.go:106-120:3", count: 15`).
+
+## Inline Suppression
+
+Suppress specific findings with comments:
+
+```go
+_, _ = os.Open("file.txt") //caliper:ignore error_swallow
+
+f.Close() //caliper:ignore  // suppresses all rules on this line
+```
 
 ## LLM-Effective Usage
 
@@ -97,10 +148,13 @@ Caliper's MCP tools are designed so that an LLM never writes formal logic — ea
 |---|---|
 | Pattern finding | "find all Close() calls" → `find_pattern` with `$x.Close()` |
 | Type exploration | "where is `*sql.DB` used?" → `find_type_usage` |
+| Interface check | "does MyWidget satisfy fyne.Widget?" → `check_interface` |
 | Refactoring | "rename OldFunc to NewFunc" → `apply_transform` |
 | Bug detection | "any resource leaks?" → `find_resource_leak` |
+| Error hygiene | "find discarded errors" → `find_error_swallow` |
 | Migration | "upgrade from v1 to v2 API" → `migrate_api` with rules |
 | Validation | "test this pattern" → `explain_match` + iterate |
+| Triage findings | "explain this nil deref" → `explain_finding` |
 | Policy enforcement | "run our team's rules" → `run_patterns` |
 
 ### What's better left to humans
