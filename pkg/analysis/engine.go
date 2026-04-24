@@ -11,6 +11,7 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -69,15 +70,27 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	}
 
 	// For stdlib (module std), disable go.work (a workspace file above
-	// the target would interfere). Only override GOROOT if the target
-	// has a compiled toolchain (pkg/tool/ exists); otherwise keep the
-	// system GOROOT and just load the source.
+	// the target would interfere). If the target has a compiled toolchain,
+	// use it as GOROOT. Otherwise (fork/checkout), use overlay to map
+	// the fork's source files onto the system GOROOT so the toolchain
+	// works but the analyzed source comes from the fork.
 	if stdRoot := findStdlibRoot(dir); stdRoot != "" {
 		goroot := filepath.Dir(stdRoot) // .../go/src → .../go
 		cfg.Env = append(os.Environ(), "GOWORK=off")
 		if hasCompiledToolchain(goroot) {
 			cfg.Dir = ""
 			cfg.Env = append(cfg.Env, "GOROOT="+goroot)
+		} else {
+			// Fork without compiled toolchain — use overlay.
+			sysGoroot := systemGOROOT()
+			if sysGoroot != "" {
+				overlay, err := buildStdlibOverlay(sysGoroot, stdRoot, dir)
+				if err == nil && len(overlay) > 0 {
+					cfg.Overlay = overlay
+					cfg.Dir = ""
+					cfg.Env = append(cfg.Env, "GOROOT="+sysGoroot)
+				}
+			}
 		}
 	}
 
@@ -213,6 +226,87 @@ func isStdlibDir(abs string) bool {
 func isGoRootSrc(dir string) bool {
 	abs, _ := filepath.Abs(dir)
 	return isStdlibDir(abs)
+}
+
+// systemGOROOT returns the system Go's GOROOT using `go env GOROOT`.
+func systemGOROOT() string {
+	if goroot := os.Getenv("GOROOT"); goroot != "" {
+		return goroot
+	}
+	out, err := exec.Command("go", "env", "GOROOT").Output()
+	if err != nil {
+		return ""
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// buildStdlibOverlay builds a packages.Config.Overlay that maps system
+// GOROOT source paths to fork source file contents. This lets the Go
+// toolchain work (from system GOROOT) while analyzing the fork's code.
+//
+// Only overlays files under the target subdirectory to keep memory usage
+// reasonable — analyzing net/http doesn't need to load all of std.
+func buildStdlibOverlay(sysGoroot, forkSrcRoot, targetDir string) (map[string][]byte, error) {
+	sysSrcRoot := filepath.Join(sysGoroot, "src")
+	overlay := make(map[string][]byte)
+
+	// Determine which subdirectory to overlay.
+	absTarget, err := filepath.Abs(targetDir)
+	if err != nil {
+		return nil, err
+	}
+	absForkSrc, err := filepath.Abs(forkSrcRoot)
+	if err != nil {
+		return nil, err
+	}
+
+	// Walk the target directory in the fork and map each .go file.
+	walkDir := absTarget
+	if walkDir == absForkSrc {
+		// Full stdlib requested — only overlay the specific packages
+		// that detectPatterns will load (too expensive to overlay all of std).
+		return nil, nil
+	}
+
+	err = filepath.Walk(walkDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		if info.IsDir() {
+			// Skip testdata, vendor, hidden dirs.
+			name := info.Name()
+			if name == "testdata" || name == "vendor" || strings.HasPrefix(name, ".") {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if !strings.HasSuffix(path, ".go") {
+			return nil
+		}
+
+		// Compute the relative path from the fork's src root.
+		rel, err := filepath.Rel(absForkSrc, path)
+		if err != nil {
+			return nil
+		}
+
+		// Map to the corresponding system GOROOT path.
+		sysPath := filepath.Join(sysSrcRoot, rel)
+
+		// Read the fork's file content.
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+
+		overlay[sysPath] = data
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+
+	return overlay, nil
 }
 
 // hasCompiledToolchain checks if a GOROOT has compiled tools (compile, link, etc.)
