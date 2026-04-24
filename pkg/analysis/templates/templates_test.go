@@ -776,6 +776,97 @@ func usesTodo() {
 }
 
 // --------------------------------------------------------------------------
+// DeferInLoop tests
+// --------------------------------------------------------------------------
+
+func TestDeferInLoop_DeferInForLoop(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func leaky() {
+	for i := 0; i < 10; i++ {
+		f, _ := os.Open("file.txt")
+		defer f.Close()
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &DeferInLoop{}
+	findings := RunTemplate(engine, tmpl)
+	defers := findingsOfKind(findings, "defer_in_loop")
+	if len(defers) == 0 {
+		t.Error("expected defer_in_loop finding for defer inside for loop")
+	}
+}
+
+func TestDeferInLoop_DeferInRangeLoop(t *testing.T) {
+	src := `package testpkg
+
+import "os"
+
+func leakyRange(files []string) {
+	for _, name := range files {
+		f, _ := os.Open(name)
+		defer f.Close()
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &DeferInLoop{}
+	findings := RunTemplate(engine, tmpl)
+	defers := findingsOfKind(findings, "defer_in_loop")
+	if len(defers) == 0 {
+		t.Error("expected defer_in_loop finding for defer inside range loop")
+	}
+}
+
+func TestDeferInLoop_DeferOutsideLoop(t *testing.T) {
+	// Defer outside a loop is fine.
+	src := `package testpkg
+
+import "os"
+
+func safe() {
+	f, _ := os.Open("file.txt")
+	defer f.Close()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &DeferInLoop{}
+	findings := RunTemplate(engine, tmpl)
+	defers := findingsOfKind(findings, "defer_in_loop")
+	if len(defers) > 0 {
+		t.Errorf("expected no defer_in_loop finding for defer outside loop, got %d: %s", len(defers), defers[0].Message)
+	}
+}
+
+func TestDeferInLoop_DeferInClosureInLoop(t *testing.T) {
+	// Defer inside a closure called in a loop is safe — the closure
+	// creates its own defer scope.
+	src := `package testpkg
+
+import "os"
+
+func safeWithClosure(files []string) {
+	for _, name := range files {
+		func() {
+			f, _ := os.Open(name)
+			defer f.Close()
+		}()
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &DeferInLoop{}
+	findings := RunTemplate(engine, tmpl)
+	defers := findingsOfKind(findings, "defer_in_loop")
+	if len(defers) > 0 {
+		t.Errorf("expected no defer_in_loop finding for defer inside closure in loop, got %d: %s", len(defers), defers[0].Message)
+	}
+}
+
+// --------------------------------------------------------------------------
 // GoroutineLeak tests
 // --------------------------------------------------------------------------
 

@@ -839,5 +839,37 @@ func allTools() []mcpsdk.Tool {
 		findContextMisuseTool,
 		findTaintFlowTool,
 		findCallSitesTool,
+		findDeferInLoopTool,
 	}
+}
+
+var findDeferInLoopTool = mcpsdk.Tool{
+	Name: "find_defer_in_loop",
+	Description: `Find defer statements inside for/range loops.
+
+A defer does NOT execute at the end of the loop iteration — it executes
+when the enclosing function returns. This means every iteration adds a
+deferred call, and none execute until the function exits. This causes
+resource accumulation (file handles, locks, connections pile up).
+
+WHAT IT CATCHES:
+  - defer f.Close() inside a loop opening files
+  - defer mu.Unlock() inside a loop acquiring locks
+  - defer rows.Close() inside a loop querying a database
+
+WHAT IS SAFE:
+  - defer inside a closure called in a loop (closure creates its own scope)
+  - defer in a helper function called from a loop
+
+USE THIS TOOL WHEN: reviewing code that processes multiple resources in a
+loop, or investigating resource exhaustion issues.`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+		},
+	},
 }
