@@ -1523,10 +1523,11 @@ func (s *Server) applySeverityOverrides(findings []templates.Finding) []template
 
 // compactFinding is a token-efficient representation of a finding for MCP output.
 type compactFinding struct {
-	Loc string `json:"loc"`
-	Sev string `json:"sev,omitempty"`
-	Msg string `json:"msg"`
-	Fix string `json:"fix,omitempty"`
+	Loc   string `json:"loc"`
+	Sev   string `json:"sev,omitempty"`
+	Msg   string `json:"msg"`
+	Fix   string `json:"fix,omitempty"`
+	Count int    `json:"count,omitempty"` // >1 when consecutive identical findings are grouped
 }
 
 // findingsResult builds a JSON result from findings, applying config overrides.
@@ -1670,18 +1671,34 @@ func (s *Server) findingsSARIF(findings []templates.Finding) *mcpsdk.CallToolRes
 func (s *Server) findingsCompact(findings []templates.Finding) *mcpsdk.CallToolResult {
 	root := findCommonRoot(findings)
 
-	compact := make([]compactFinding, len(findings))
-	for i, f := range findings {
+	var compact []compactFinding
+	for _, f := range findings {
 		relFile := f.Location.File
 		if root != "" {
 			relFile = strings.TrimPrefix(f.Location.File, root+"/")
 		}
-		compact[i] = compactFinding{
+		cf := compactFinding{
 			Loc: fmt.Sprintf("%s:%d:%d", relFile, f.Location.Line, f.Location.Column),
 			Sev: f.Severity,
 			Msg: f.Message,
 			Fix: f.Suggestion,
 		}
+
+		// Group consecutive findings with the same message and file.
+		if len(compact) > 0 {
+			prev := &compact[len(compact)-1]
+			if prev.Msg == cf.Msg && sameFile(prev.Loc, cf.Loc) {
+				if prev.Count == 0 {
+					prev.Count = 2
+				} else {
+					prev.Count++
+				}
+				// Extend loc to show range: "file.go:106:3-120"
+				prev.Loc = extendLocRange(prev.Loc, f.Location.Line)
+				continue
+			}
+		}
+		compact = append(compact, cf)
 	}
 
 	result := map[string]any{
@@ -1692,6 +1709,32 @@ func (s *Server) findingsCompact(findings []templates.Finding) *mcpsdk.CallToolR
 		result["root"] = root
 	}
 	return jsonResult(result)
+}
+
+// sameFile checks if two compact loc strings refer to the same file.
+func sameFile(loc1, loc2 string) bool {
+	file1 := loc1[:strings.IndexByte(loc1, ':')]
+	file2 := loc2[:strings.IndexByte(loc2, ':')]
+	return file1 == file2
+}
+
+// extendLocRange updates a loc string to show a line range.
+// "file.go:106:3" + line 120 → "file.go:106-120:3"
+func extendLocRange(loc string, endLine int) string {
+	parts := strings.SplitN(loc, ":", 3)
+	if len(parts) < 2 {
+		return loc
+	}
+	// Extract the start line from the existing loc.
+	startLine := parts[1]
+	// Check if it already has a range (e.g., "106-115").
+	if idx := strings.IndexByte(startLine, '-'); idx >= 0 {
+		startLine = startLine[:idx]
+	}
+	if len(parts) == 3 {
+		return fmt.Sprintf("%s:%s-%d:%s", parts[0], startLine, endLine, parts[2])
+	}
+	return fmt.Sprintf("%s:%s-%d", parts[0], startLine, endLine)
 }
 
 // findCommonRoot extracts the longest common directory prefix from finding locations.
