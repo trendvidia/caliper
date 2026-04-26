@@ -148,6 +148,16 @@ func (c *Config) MaxCacheEntries() int {
 	return 0
 }
 
+// Infallible returns the project-local infallibility allowlist extension,
+// or nil if none is configured. Used by the find_unchecked_error analyzer
+// at startup to extend its hardcoded stdlib allowlist with user APIs.
+func (c *Config) Infallible() *pb.Infallible {
+	if c == nil || c.pb == nil {
+		return nil
+	}
+	return c.pb.Infallible
+}
+
 // GCLPatterns returns the configured .gcl pattern file paths, resolved
 // relative to the given base directory. Supports glob patterns.
 func (c *Config) GCLPatterns(baseDir string) []string {

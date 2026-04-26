@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
+	pb "github.com/trendvidia/caliper/pkg/caliperpb"
 )
 
 // setupProject creates a temp Go project with the given source file and
@@ -268,6 +269,285 @@ func deferred() error {
 	}
 	if len(deferFindings) > 0 {
 		t.Error("expected no deferred error findings when IncludeDefers=false")
+	}
+}
+
+func TestUncheckedError_InfallibleStdlib(t *testing.T) {
+	// Methods/functions whose error return is documented to always be nil
+	// or is, by long-standing convention, not worth checking per call.
+	// Flagging them produces noise that erodes trust in the rest of the
+	// tool's output.
+	src := `package testpkg
+
+import (
+	"bytes"
+	"crypto/sha256"
+	"fmt"
+	"io"
+	"math/rand"
+	"strings"
+)
+
+func writes() {
+	var buf bytes.Buffer
+	buf.Write([]byte("a"))
+	buf.WriteByte('b')
+	buf.WriteRune('c')
+	buf.WriteString("d")
+
+	var sb strings.Builder
+	sb.Write([]byte("a"))
+	sb.WriteByte('b')
+	sb.WriteRune('c')
+	sb.WriteString("d")
+
+	h := sha256.New()
+	h.Write([]byte("payload"))
+
+	// Conventional: writes to os.Stdout.
+	fmt.Print("a")
+	fmt.Printf("%s", "b")
+	fmt.Println("c")
+
+	// Transitively infallible: Fprint* into infallible writers.
+	fmt.Fprint(&buf, "a")
+	fmt.Fprintf(&buf, "%s", "b")
+	fmt.Fprintln(&sb, "c")
+
+	// Documented infallible: PipeWriter/PipeReader CloseWithError.
+	pr, pw := io.Pipe()
+	pw.CloseWithError(nil)
+	pr.CloseWithError(nil)
+
+	// Transitively infallible: io.WriteString to an infallible writer.
+	io.WriteString(&buf, "x")
+	io.WriteString(&sb, "y")
+
+	// Documented infallible: math/rand package-level and method Read.
+	p := make([]byte, 8)
+	rand.Read(p)
+	r := rand.New(rand.NewSource(1))
+	r.Read(p)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{IncludeExplicit: true, IncludeDefers: true}
+	findings := RunTemplate(engine, tmpl)
+	errs := findingsOfKind(findings, "unchecked_error")
+	if len(errs) > 0 {
+		t.Errorf("expected no unchecked_error findings for infallible stdlib calls, got %d:", len(errs))
+		for _, f := range errs {
+			t.Errorf("  %s", f.Message)
+		}
+	}
+}
+
+func TestUncheckedError_WriterArgFallible(t *testing.T) {
+	// fmt.Fprint* and io.WriteString are only infallible when the writer
+	// is. Writing to an arbitrary io.Writer (e.g., *os.File) can fail and
+	// must still be flagged.
+	src := `package testpkg
+
+import (
+	"fmt"
+	"io"
+	"os"
+)
+
+func writes() {
+	fmt.Fprintln(os.Stdout, "a")
+	io.WriteString(os.Stdout, "b")
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 2 {
+		t.Errorf("expected 2 unchecked_error findings (Fprintln+WriteString to *os.File), got %d", got)
+	}
+}
+
+func TestUncheckedError_StillFlagsRealStdlib(t *testing.T) {
+	// Sanity check: removing the noise must not silence real findings.
+	// os.File.Close() does return a meaningful error and must still fire.
+	src := `package testpkg
+
+import "os"
+
+func bad() {
+	f, _ := os.Open("test.txt")
+	f.Close()
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected unchecked_error finding for f.Close()")
+	}
+}
+
+func TestUncheckedError_ConfigUserMethodExact(t *testing.T) {
+	// User registers a third-party method as infallible. Because the
+	// project source is testpkg, the type lives at testpkg.Logger.Debug.
+	src := `package testpkg
+
+type Logger struct{}
+
+func (Logger) Debug(msg string) error { return nil }
+
+func use() {
+	var l Logger
+	l.Debug("hi")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		Methods: []string{"testpkg.Logger.Debug"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (Logger.Debug is allowlisted), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigUserMethodGlob(t *testing.T) {
+	// Glob form: silence every method on Logger.
+	src := `package testpkg
+
+type Logger struct{}
+
+func (Logger) Debug(msg string) error { return nil }
+func (Logger) Info(msg string) error  { return nil }
+func (Logger) Warn(msg string) error  { return nil }
+
+func use() {
+	var l Logger
+	l.Debug("a")
+	l.Info("b")
+	l.Warn("c")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		Methods: []string{"testpkg.Logger.*"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (Logger.* glob), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigUserFunction(t *testing.T) {
+	// Register a package-qualified function (fmt.Errorf returns error;
+	// as a bare expression statement, it would normally be flagged as
+	// "silently discarded"). With user-function config, it's silenced.
+	src := `package testpkg
+
+import "fmt"
+
+func use() {
+	fmt.Errorf("oh no")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		Functions: []string{"fmt.Errorf"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (fmt.Errorf is user-allowlisted), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigUserWriter(t *testing.T) {
+	// User registers a third-party writer type as infallible; calls of
+	// fmt.Fprint*(w, ...) where w is that type become transitively safe.
+	src := `package testpkg
+
+import "fmt"
+
+type NopWriter struct{}
+
+func (NopWriter) Write(p []byte) (int, error) { return len(p), nil }
+
+func use() {
+	var w NopWriter
+	fmt.Fprintln(&w, "x")
+	fmt.Fprintf(&w, "%s", "y")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		Writers: []string{"testpkg.NopWriter"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (NopWriter is registered as infallible), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigDisableHardcoded(t *testing.T) {
+	// User policy says they DO want bytes.Buffer.Write checked, even
+	// though caliper hardcodes it as infallible. Disabled entry must
+	// unmask the finding.
+	src := `package testpkg
+
+import "bytes"
+
+func use() {
+	var buf bytes.Buffer
+	buf.Write([]byte("a"))
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		DisableMethods: []string{"bytes.Buffer.Write"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 1 {
+		t.Errorf("expected 1 finding (disable_methods unmasks bytes.Buffer.Write), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigDisableGlob(t *testing.T) {
+	// Disable a whole family with a glob.
+	src := `package testpkg
+
+import "bytes"
+
+func use() {
+	var buf bytes.Buffer
+	buf.Write([]byte("a"))
+	buf.WriteByte('b')
+	buf.WriteString("c")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		DisableMethods: []string{"bytes.Buffer.Write*"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 3 {
+		t.Errorf("expected 3 findings (disable glob unmasks Write/WriteByte/WriteString), got %d", got)
 	}
 }
 

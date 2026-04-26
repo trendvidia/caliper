@@ -51,6 +51,8 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
+	templates.ConfigureInfallible(cfg.Infallible())
+
 	cacheSize := defaultMaxCacheEntries
 	if cfg.MaxCacheEntries() > 0 {
 		cacheSize = cfg.MaxCacheEntries()

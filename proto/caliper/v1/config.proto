@@ -20,6 +20,10 @@ message Config {
 
   // Patterns lists paths to .gcl pattern files. Supports globs.
   repeated string patterns = 5;
+
+  // Infallible extends find_unchecked_error's allowlist with project-local
+  // APIs whose error returns are known not to occur in practice.
+  Infallible infallible = 6;
 }
 
 // RulesConfig controls which rules are active.
@@ -48,4 +52,33 @@ message DefaultsConfig {
   string path = 1;
   // Whether transforms default to preview mode. Default: true.
   bool preview = 2;
+}
+
+// Infallible extends find_unchecked_error's allowlist with project-local
+// or third-party APIs whose error returns are known not to occur in
+// practice. Each entry is either an exact string or a glob pattern (use
+// "*" to match any sequence of characters, including dots and slashes).
+message Infallible {
+  // Methods whose error return is always nil.
+  // Format: "<pkgpath>.<TypeName>.<Method>"
+  // Example: "github.com/myorg/mylib.Logger.Debug"
+  repeated string methods = 1;
+
+  // Package-level functions whose error return is always nil.
+  // Format: "<pkgpath>.<Function>"
+  // Example: "github.com/myorg/mylib.Trace"
+  repeated string functions = 2;
+
+  // Writer types whose Write* methods are infallible. Calls of the
+  // writer-arg family (fmt.Fprint*, io.WriteString) become transitively
+  // infallible when their first arg is one of these.
+  // Format: "<pkgpath>.<TypeName>"
+  repeated string writers = 3;
+
+  // Hardcoded stdlib entries to re-enable flagging for. Same key formats
+  // as above; useful when project policy demands checking errors that
+  // caliper would otherwise treat as infallible by default.
+  repeated string disable_methods = 4;
+  repeated string disable_functions = 5;
+  repeated string disable_writers = 6;
 }

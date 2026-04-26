@@ -302,6 +302,54 @@ _, _ = os.Open("file.txt") //caliper:ignore error_swallow
 f.Close() //caliper:ignore  // suppresses all rules on this line
 ```
 
+## Project Configuration
+
+Caliper looks for `.caliper.pxf` in the current directory and walks up to the
+nearest ancestor. The format is [PXF](https://github.com/trendvidia/protowire),
+a text encoding of proto3 messages.
+
+### Extending the unchecked-error allowlist
+
+`find_unchecked_error` ships with a small built-in allowlist of stdlib APIs
+whose `error` returns are documented (or conventionally treated) as always
+nil — `bytes.Buffer.Write*`, `strings.Builder.Write*`, `hash.Hash.Write`,
+`fmt.Print*`, and so on. To extend it with your own infallible APIs:
+
+```
+infallible {
+  // Methods that never return an error in practice.
+  // Format: "<pkgpath>.<TypeName>.<Method>" — exact or glob ("*").
+  methods = [
+    "github.com/myorg/mylib.Logger.Debug",
+    "github.com/myorg/mylib.Logger.Info",
+    "github.com/myorg/internal/metrics.Counter.*"
+  ]
+
+  // Package-level functions that never return an error.
+  functions = [
+    "github.com/myorg/mylib.Trace"
+  ]
+
+  // Writer types whose Write is infallible. Calls of fmt.Fprint*(w, ...)
+  // and io.WriteString(w, ...) become transitively infallible when w is
+  // one of these.
+  writers = [
+    "github.com/myorg/mylib.NopWriter"
+  ]
+
+  // Re-enable flagging for built-in stdlib entries — useful if your
+  // project policy demands checking errors caliper would otherwise treat
+  // as infallible by default.
+  disable_methods = [
+    "bytes.Buffer.Write*"
+  ]
+}
+```
+
+Globs use `*` to match any sequence of characters (including `.` and `/`);
+all other characters are literal. Bad globs are silently skipped — config
+errors should never crash analysis.
+
 ## Next Steps
 
 - See the full [tool reference](../README.md) for all 24 MCP tools

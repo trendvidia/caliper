@@ -68,6 +68,10 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 		return nil
 	}
 
+	if isInfallibleErrorReturn(call, ctx.Func.Info) {
+		return nil
+	}
+
 	// Check if error is assigned to blank identifier.
 	for i, lhs := range assign.Lhs {
 		ident, ok := lhs.(*ast.Ident)
@@ -116,6 +120,10 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 	}
 
 	if !callReturnsError(call, ctx.Func.Info) {
+		return nil
+	}
+
+	if isInfallibleErrorReturn(call, ctx.Func.Info) {
 		return nil
 	}
 
