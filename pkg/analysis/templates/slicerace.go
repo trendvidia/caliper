@@ -64,6 +64,15 @@ func (sa *SliceAppendRace) Analyze(ctx *TemplateContext) []Finding {
 				}
 			}
 
+			// Skip if the append is in a block protected by Lock()/
+			// Unlock() bracketing (or Lock() + deferred Unlock()) in
+			// the goroutine body. Same heuristic shape as race.go's
+			// hasMutexProtection — a held lock around the access is
+			// the user's signal that they know about the sharing.
+			if appendInLockedBlock(funcLit.Body, target.pos) {
+				continue
+			}
+
 			findings = append(findings, Finding{
 				Kind:     "slice_append_race",
 				Severity: "error",
@@ -128,4 +137,79 @@ func isSliceType(t types.Type) bool {
 	}
 	_, ok := t.Underlying().(*types.Slice)
 	return ok
+}
+
+// appendInLockedBlock reports whether the append at pos is in a block
+// where a Lock() (or RLock()) call lexically precedes it AND either an
+// Unlock() (or RUnlock()) call follows it in the same block, or a
+// deferred Unlock has been scheduled in the closure body. This is the
+// same heuristic shape as race.go's hasMutexProtection — a held lock at
+// the access point is treated as the user's intentional protection.
+//
+// Misses: locks acquired in an outer block, locks released conditionally,
+// or Lock-equivalent functions not named Lock/RLock. False negatives are
+// preferable to false positives here — the existing call sites that
+// depend on this kind of protection (e.g., caliper's own RunTemplate)
+// follow the standard pattern this matches.
+func appendInLockedBlock(body *ast.BlockStmt, pos token.Pos) bool {
+	block := findInnermostBlock(body, pos)
+	if block == nil {
+		return false
+	}
+
+	lockBefore := false
+	for _, stmt := range block.List {
+		if stmt.End() < pos && stmtHasLockCall(stmt) {
+			lockBefore = true
+			break
+		}
+	}
+	if !lockBefore {
+		return false
+	}
+
+	for _, stmt := range block.List {
+		if stmt.Pos() > pos && stmtHasUnlockCall(stmt) {
+			return true
+		}
+	}
+
+	deferredUnlock := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if deferredUnlock {
+			return false
+		}
+		d, ok := n.(*ast.DeferStmt)
+		if !ok {
+			return true
+		}
+		ast.Inspect(d, func(m ast.Node) bool {
+			if deferredUnlock {
+				return false
+			}
+			if _, kind := extractLockCall(m); kind == "Unlock" || kind == "RUnlock" {
+				deferredUnlock = true
+			}
+			return !deferredUnlock
+		})
+		return !deferredUnlock
+	})
+	return deferredUnlock
+}
+
+// findInnermostBlock returns the deepest *ast.BlockStmt under root that
+// lexically contains pos.
+func findInnermostBlock(root ast.Node, pos token.Pos) *ast.BlockStmt {
+	var found *ast.BlockStmt
+	ast.Inspect(root, func(n ast.Node) bool {
+		block, ok := n.(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		if block.Pos() <= pos && pos <= block.End() {
+			found = block
+		}
+		return true
+	})
+	return found
 }

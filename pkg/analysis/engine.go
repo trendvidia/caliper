@@ -74,7 +74,8 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 			packages.NeedSyntax |
 			packages.NeedTypes |
 			packages.NeedTypesInfo |
-			packages.NeedDeps,
+			packages.NeedDeps |
+			packages.NeedModule,
 		Dir: dir,
 	}
 

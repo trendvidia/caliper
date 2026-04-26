@@ -5,6 +5,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"strconv"
+	"strings"
 )
 
 // RaceCondition detects potential data races caused by goroutine closures
@@ -46,6 +48,16 @@ func (rc *RaceCondition) Analyze(ctx *TemplateContext) []Finding {
 
 func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, funcLit *ast.FuncLit) []Finding {
 	var findings []Finding
+
+	// Go 1.22 changed for-loop semantics so each iteration gets a fresh
+	// copy of the loop variable. Before 1.22, `for i := ... { go func()
+	// { use(i) }() }` was a classic race; from 1.22 on it's safe unless
+	// the closure itself writes the variable. The check honors the
+	// declared `go` version in go.mod (conservative when unknown).
+	loopVarPerIter := false
+	if ctx.Func.Pkg != nil && ctx.Func.Pkg.Module != nil {
+		loopVarPerIter = goVersionAtLeast(ctx.Func.Pkg.Module.GoVersion, 22)
+	}
 
 	// Step 1: Find all parameters of the closure (these are not free variables).
 	params := closureParams(funcLit)
@@ -92,7 +104,9 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 		usedAfter := identUsedInStmts(stmtsAfterGo, varName)
 
 		// Also check if the variable is a loop variable that is mutated by the loop itself.
-		if !usedAfter && enclosingLoop != nil {
+		// Under Go 1.22+ loop scoping, each iteration has its own copy, so
+		// the loop's iteration update no longer races with the closure.
+		if !usedAfter && enclosingLoop != nil && !loopVarPerIter {
 			usedAfter = isLoopVariable(enclosingLoop, varName)
 		}
 
@@ -102,10 +116,10 @@ func (rc *RaceCondition) checkClosure(ctx *TemplateContext, goStmt *ast.GoStmt, 
 
 		// Skip if the variable is not written on either side (goroutine
 		// closure or statements after go). Read-only captures are safe
-		// regardless of type — but loop variables are always mutated by
-		// the loop, so don't skip those.
+		// regardless of type — but loop variables under pre-1.22 semantics
+		// are always mutated by the loop, so don't skip those.
 		isLoopVar := enclosingLoop != nil && isLoopVariable(enclosingLoop, varName)
-		if !isLoopVar {
+		if !isLoopVar || loopVarPerIter {
 			writtenAfterGo := identWrittenInStmts(stmtsAfterGo, varName)
 			writtenInClosure := identWrittenInNode(funcLit.Body, varName)
 			if !writtenAfterGo && !writtenInClosure {
@@ -756,6 +770,22 @@ func isOnceDoStmt(stmt ast.Stmt) bool {
 		return false
 	}
 	return sel.Sel.Name == "Do"
+}
+
+// goVersionAtLeast reports whether v ("1.22", "1.22.1", "go1.22") names a
+// Go release whose minor version is >= the given threshold. Empty or
+// unparseable inputs return false (conservative default).
+func goVersionAtLeast(v string, minor int) bool {
+	v = strings.TrimPrefix(v, "go")
+	parts := strings.SplitN(v, ".", 3)
+	if len(parts) < 2 || parts[0] != "1" {
+		return false
+	}
+	n, err := strconv.Atoi(parts[1])
+	if err != nil {
+		return false
+	}
+	return n >= minor
 }
 
 // stmtHasChanRecv checks if a statement contains a channel receive operation.

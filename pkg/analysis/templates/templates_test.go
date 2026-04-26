@@ -12,12 +12,20 @@ import (
 )
 
 // setupProject creates a temp Go project with the given source file and
-// returns an analysis.Engine loaded from it.
+// returns an analysis.Engine loaded from it. Defaults to go 1.23.
 func setupProject(t *testing.T, src string) *analysis.Engine {
+	return setupProjectWithGoVersion(t, src, "1.23")
+}
+
+// setupProjectWithGoVersion is like setupProject but lets the test pick
+// the `go` directive in go.mod — needed to exercise behavior that depends
+// on language version (e.g., per-iteration loop scoping in Go 1.22+).
+func setupProjectWithGoVersion(t *testing.T, src, goVersion string) *analysis.Engine {
 	t.Helper()
 
 	dir := t.TempDir()
-	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpkg\n\ngo 1.23\n"), 0o644); err != nil {
+	goMod := "module testpkg\n\ngo " + goVersion + "\n"
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "code.go"), []byte(src), 0o644); err != nil {
@@ -1298,6 +1306,101 @@ func localSlice() {
 	}
 }
 
+func TestSliceAppendRace_LockedInline(t *testing.T) {
+	// Append protected by a Lock()/Unlock() pair in the same block —
+	// must not flag. This is the pattern caliper's own RunTemplate
+	// uses, and the original false positive that motivated the fix.
+	src := `package testpkg
+
+import "sync"
+
+func collector() {
+	var (
+		mu      sync.Mutex
+		results []int
+	)
+	for i := 0; i < 10; i++ {
+		i := i
+		go func() {
+			mu.Lock()
+			results = append(results, i)
+			mu.Unlock()
+		}()
+	}
+	_ = results
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SliceAppendRace{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "slice_append_race")
+	if len(races) > 0 {
+		t.Errorf("expected no slice_append_race when append is bracketed by Lock/Unlock, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestSliceAppendRace_LockedDeferred(t *testing.T) {
+	// Append protected by Lock() + deferred Unlock() — the most common
+	// Go idiom. Must not flag.
+	src := `package testpkg
+
+import "sync"
+
+func collector() {
+	var (
+		mu      sync.Mutex
+		results []int
+	)
+	for i := 0; i < 10; i++ {
+		i := i
+		go func() {
+			mu.Lock()
+			defer mu.Unlock()
+			results = append(results, i)
+		}()
+	}
+	_ = results
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SliceAppendRace{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "slice_append_race")
+	if len(races) > 0 {
+		t.Errorf("expected no slice_append_race when Lock + defer Unlock, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestSliceAppendRace_LockOnlyAfterAppend(t *testing.T) {
+	// Lock taken AFTER the append doesn't protect it — must still flag.
+	src := `package testpkg
+
+import "sync"
+
+func collector() {
+	var (
+		mu      sync.Mutex
+		results []int
+	)
+	for i := 0; i < 10; i++ {
+		i := i
+		go func() {
+			results = append(results, i)
+			mu.Lock()
+			mu.Unlock()
+		}()
+	}
+	_ = results
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &SliceAppendRace{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "slice_append_race")) == 0 {
+		t.Error("expected slice_append_race when Lock comes after the append (still racy)")
+	}
+}
+
 // --------------------------------------------------------------------------
 // ErrorSwallow tests
 // --------------------------------------------------------------------------
@@ -1586,7 +1689,9 @@ func noRace() {
 	}
 }
 
-func TestRaceCondition_LoopVariable(t *testing.T) {
+func TestRaceCondition_LoopVariable_Pre122(t *testing.T) {
+	// Pre-Go-1.22, the loop variable is reused across iterations, so a
+	// goroutine capturing `i` races with the loop's iteration update.
 	src := `package testpkg
 
 import "fmt"
@@ -1599,12 +1704,62 @@ func loopRace() {
 	}
 }
 `
-	engine := setupProject(t, src)
+	engine := setupProjectWithGoVersion(t, src, "1.21")
 	tmpl := &RaceCondition{}
 	findings := RunTemplate(engine, tmpl)
 	races := findingsOfKind(findings, "race_condition")
 	if len(races) == 0 {
-		t.Error("expected race condition finding for loop variable captured by goroutine closure")
+		t.Error("expected race condition finding for pre-1.22 loop-var capture")
+	}
+}
+
+func TestRaceCondition_LoopVariable_Post122(t *testing.T) {
+	// Go 1.22+ scopes loop variables per iteration, so capturing `i` in a
+	// goroutine that does not write it is safe and must not be flagged.
+	src := `package testpkg
+
+import "fmt"
+
+func loopRace() {
+	for i := 0; i < 10; i++ {
+		go func() {
+			fmt.Println(i)
+		}()
+	}
+}
+`
+	engine := setupProjectWithGoVersion(t, src, "1.22")
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) > 0 {
+		t.Errorf("expected no race finding under Go 1.22+ per-iteration scoping, got %d: %s", len(races), races[0].Message)
+	}
+}
+
+func TestRaceCondition_NonLoopVarStillRacy_Post122(t *testing.T) {
+	// Per-iteration loop scoping doesn't change the race story for
+	// non-loop variables. A shared counter mutated by both goroutine
+	// and the surrounding code still races, even under Go 1.22+.
+	src := `package testpkg
+
+func loopRace() {
+	count := 0
+	for i := 0; i < 10; i++ {
+		go func() {
+			count = count + 1
+		}()
+		count = count + 1
+	}
+	_ = count
+}
+`
+	engine := setupProjectWithGoVersion(t, src, "1.22")
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	races := findingsOfKind(findings, "race_condition")
+	if len(races) == 0 {
+		t.Error("expected race finding for non-loop captured var written from goroutine")
 	}
 }
 
