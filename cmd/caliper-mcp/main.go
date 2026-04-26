@@ -19,7 +19,9 @@ import (
 func main() {
 	// Ensure full stack traces on fatal crashes (concurrent map access, etc.)
 	// so the root cause can be diagnosed from MCP client logs.
-	os.Setenv("GOTRACEBACK", "crash")
+	if err := os.Setenv("GOTRACEBACK", "crash"); err != nil {
+		fmt.Fprintf(os.Stderr, "caliper: setting GOTRACEBACK: %v\n", err)
+	}
 
 	// Top-level panic recovery — last resort before process death.
 	defer func() {

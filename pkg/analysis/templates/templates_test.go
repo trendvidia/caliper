@@ -343,10 +343,9 @@ func writes() {
 	}
 }
 
-func TestUncheckedError_WriterArgFallible(t *testing.T) {
-	// fmt.Fprint* and io.WriteString are only infallible when the writer
-	// is. Writing to an arbitrary io.Writer (e.g., *os.File) can fail and
-	// must still be flagged.
+func TestUncheckedError_WriterArgInfallibleStdoutStderr(t *testing.T) {
+	// fmt.Fprint*/io.WriteString to os.Stdout or os.Stderr are
+	// conventional logging — silenced by value-based writer recognition.
 	src := `package testpkg
 
 import (
@@ -357,14 +356,68 @@ import (
 
 func writes() {
 	fmt.Fprintln(os.Stdout, "a")
-	io.WriteString(os.Stdout, "b")
+	fmt.Fprintln(os.Stderr, "b")
+	fmt.Fprintf(os.Stderr, "%s", "c")
+	io.WriteString(os.Stdout, "d")
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (writes to os.Stdout/Stderr are infallible), got %d", got)
+	}
+}
+
+func TestUncheckedError_WriterArgFallibleOtherFile(t *testing.T) {
+	// A *os.File that is NOT os.Stdout/Stderr can fail (real disk file,
+	// network FD) and must still be flagged. This guards against the
+	// value-based check accidentally over-broadening to all *os.File.
+	src := `package testpkg
+
+import (
+	"fmt"
+	"io"
+	"os"
+)
+
+func writes(f *os.File) {
+	fmt.Fprintln(f, "a")
+	io.WriteString(f, "b")
 }
 `
 	engine := setupProject(t, src)
 	tmpl := &UncheckedError{}
 	findings := RunTemplate(engine, tmpl)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 2 {
-		t.Errorf("expected 2 unchecked_error findings (Fprintln+WriteString to *os.File), got %d", got)
+		t.Errorf("expected 2 findings (Fprintln+WriteString to a non-Stdout/Stderr *os.File), got %d", got)
+	}
+}
+
+func TestUncheckedError_WriterArgDisabledStderr(t *testing.T) {
+	// A project that wants to check stderr writes can list "os.Stderr"
+	// in disable_writers — the value-based shortcut must honor it.
+	src := `package testpkg
+
+import (
+	"fmt"
+	"os"
+)
+
+func writes() {
+	fmt.Fprintln(os.Stderr, "a")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		DisableWriters: []string{"os.Stderr"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 1 {
+		t.Errorf("expected 1 finding (os.Stderr disabled), got %d", got)
 	}
 }
 

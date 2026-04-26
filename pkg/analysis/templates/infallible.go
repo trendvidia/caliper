@@ -72,11 +72,16 @@ var infallibleStdlibFuncs = map[string]bool{
 // io.WriteString uses the writer's WriteString method when available
 // (which *bytes.Buffer and *strings.Builder both implement infallibly) and
 // otherwise calls Write exactly once — also infallible for those types.
+//
+// go/printer.Fprint writes formatted Go source to its first arg; in
+// caliper's own codebase (and most tools that pretty-print AST) the writer
+// is a local *bytes.Buffer.
 var writerArgInfallibleFuncs = map[string]bool{
-	"fmt.Fprint":     true,
-	"fmt.Fprintf":    true,
-	"fmt.Fprintln":   true,
-	"io.WriteString": true,
+	"fmt.Fprint":       true,
+	"fmt.Fprintf":      true,
+	"fmt.Fprintln":     true,
+	"io.WriteString":   true,
+	"go/printer.Fprint": true,
 }
 
 // infallibleStdlibWriters lists writer types whose Write is infallible.
@@ -84,6 +89,19 @@ var writerArgInfallibleFuncs = map[string]bool{
 var infallibleStdlibWriters = map[string]bool{
 	"bytes.Buffer":    true,
 	"strings.Builder": true,
+}
+
+// infallibleStdlibWriterVars lists package-level variables whose Write is,
+// by long-standing convention, not worth checking per call. Distinct from
+// infallibleStdlibWriters (which matches by type) because these are
+// *os.File values — other *os.File values (real disk files, network FDs)
+// can absolutely fail and must remain flagged.
+//
+// Both share the disable_writers list: a project that genuinely wants to
+// check stderr writes can list "os.Stderr" there.
+var infallibleStdlibWriterVars = map[string]bool{
+	"os.Stdout": true,
+	"os.Stderr": true,
 }
 
 // keySet matches a key string against a fixed set of allowed entries. Each
@@ -287,15 +305,33 @@ func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info
 		return true
 	}
 	if writerArgInfallibleFuncs[key] && len(call.Args) >= 1 {
-		return isInfallibleWriterArg(info.TypeOf(call.Args[0]))
+		return isInfallibleWriterArg(call.Args[0], info)
 	}
 	return false
 }
 
-// isInfallibleWriterArg reports whether t is a writer type whose Write
-// method is infallible — either a stdlib writer in the hardcoded set (and
-// not disabled by config) or a user-registered writer.
-func isInfallibleWriterArg(t types.Type) bool {
+// isInfallibleWriterArg reports whether arg is a writer whose Write method
+// is infallible. Two paths:
+//
+//   - Value-based: a direct reference to a package-level variable in the
+//     infallibleStdlibWriterVars set (e.g. os.Stdout, os.Stderr). Other
+//     values of the same type (like a *os.File pointing at a real file)
+//     stay fallible and must still be flagged.
+//   - Type-based: a value whose static type is a hardcoded infallible
+//     writer (bytes.Buffer, strings.Builder) or a user-registered one.
+//
+// Both paths consult disabled_writers to honor user overrides.
+func isInfallibleWriterArg(arg ast.Expr, info *types.Info) bool {
+	if sel, ok := arg.(*ast.SelectorExpr); ok {
+		if v, ok := info.ObjectOf(sel.Sel).(*types.Var); ok && v.Pkg() != nil {
+			key := v.Pkg().Path() + "." + v.Name()
+			if infallibleStdlibWriterVars[key] && !disabledStdlibWriters.Match(key) {
+				return true
+			}
+		}
+	}
+
+	t := info.TypeOf(arg)
 	if t == nil {
 		return false
 	}

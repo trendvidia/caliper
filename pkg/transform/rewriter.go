@@ -511,7 +511,9 @@ func (am *APIMigration) fixImports() {
 		if err != nil {
 			continue
 		}
-		os.WriteFile(file, formatted, 0o644)
+		if err := os.WriteFile(file, formatted, 0o644); err != nil {
+			fmt.Fprintf(os.Stderr, "caliper: writing %s after goimports: %v\n", file, err)
+		}
 	}
 }
 

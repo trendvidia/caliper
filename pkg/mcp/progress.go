@@ -2,6 +2,8 @@ package mcp
 
 import (
 	"context"
+	"fmt"
+	"os"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -47,5 +49,10 @@ func (p *progress) send(current, total float64, message string) {
 	if message != "" {
 		params["message"] = message
 	}
-	p.srv.SendNotificationToClient(p.ctx, "notifications/progress", params)
+	if err := p.srv.SendNotificationToClient(p.ctx, "notifications/progress", params); err != nil {
+		// Progress is best-effort — a transport failure here shouldn't
+		// abort the analysis, but it's worth surfacing so client-side
+		// progress disappearing doesn't look like a hung server.
+		fmt.Fprintf(os.Stderr, "caliper: progress notification: %v\n", err)
+	}
 }

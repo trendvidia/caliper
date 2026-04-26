@@ -313,7 +313,10 @@ a text encoding of proto3 messages.
 `find_unchecked_error` ships with a small built-in allowlist of stdlib APIs
 whose `error` returns are documented (or conventionally treated) as always
 nil — `bytes.Buffer.Write*`, `strings.Builder.Write*`, `hash.Hash.Write`,
-`fmt.Print*`, and so on. To extend it with your own infallible APIs:
+`fmt.Print*`, `fmt.Fprint*`/`io.WriteString`/`go/printer.Fprint` to
+`*bytes.Buffer`/`*strings.Builder`/`os.Stdout`/`os.Stderr`, and so on.
+Writes to other `*os.File` values (real disk files, network FDs) are
+still flagged. To extend the allowlist with your own infallible APIs:
 
 ```
 infallible {
