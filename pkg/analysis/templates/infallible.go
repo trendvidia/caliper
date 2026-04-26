@@ -1,8 +1,10 @@
 package templates
 
 import (
+	"fmt"
 	"go/ast"
 	"go/types"
+	"os"
 	"regexp"
 	"strings"
 
@@ -95,21 +97,56 @@ type keySet struct {
 }
 
 // newKeySet partitions entries into exact and glob buckets and compiles
-// each glob to a regexp. Bad globs are silently skipped — config should
-// not crash analysis.
-func newKeySet(entries []string) *keySet {
+// each glob to a regexp. Returns the populated set plus any per-entry
+// errors so the caller can surface them — bad entries are skipped rather
+// than crashing analysis.
+func newKeySet(entries []string) (*keySet, []error) {
 	if len(entries) == 0 {
-		return nil
+		return nil, nil
 	}
 	ks := &keySet{exact: make(map[string]bool)}
+	var errs []error
 	for _, e := range entries {
+		if err := validateEntry(e); err != nil {
+			errs = append(errs, fmt.Errorf("entry %q: %w", e, err))
+			continue
+		}
 		if strings.ContainsRune(e, '*') {
-			if re, err := compileGlob(e); err == nil {
-				ks.globs = append(ks.globs, re)
+			re, err := compileGlob(e)
+			if err != nil {
+				errs = append(errs, fmt.Errorf("entry %q: %w", e, err))
+				continue
 			}
+			ks.globs = append(ks.globs, re)
 		} else {
 			ks.exact[e] = true
 		}
+	}
+	return ks, errs
+}
+
+// validateEntry rejects entries that contain shell-glob metacharacters
+// caliper does not support. The only wildcard is '*'; the others are
+// almost always typos (e.g., a user writing "Logger.De?bug" expecting
+// '?' to act as a single-char wildcard) that would otherwise silently
+// match nothing.
+func validateEntry(e string) error {
+	for _, r := range e {
+		switch r {
+		case '?', '[', ']', '{', '}':
+			return fmt.Errorf("unsupported glob character %q (only '*' is supported)", r)
+		}
+	}
+	return nil
+}
+
+// loadKeySet wraps newKeySet, logging any glob compile errors to stderr
+// with a field-name prefix so the user can locate the bad entry in their
+// .caliper.pxf.
+func loadKeySet(entries []string, field string) *keySet {
+	ks, errs := newKeySet(entries)
+	for _, err := range errs {
+		fmt.Fprintf(os.Stderr, "caliper: infallible.%s: %v\n", field, err)
 	}
 	return ks
 }
@@ -173,12 +210,12 @@ func ConfigureInfallible(inf *pb.Infallible) {
 		disabledStdlibWriters = nil
 		return
 	}
-	userInfallibleMethods = newKeySet(inf.GetMethods())
-	userInfallibleFuncs = newKeySet(inf.GetFunctions())
-	userInfallibleWriters = newKeySet(inf.GetWriters())
-	disabledStdlibMethods = newKeySet(inf.GetDisableMethods())
-	disabledStdlibFuncs = newKeySet(inf.GetDisableFunctions())
-	disabledStdlibWriters = newKeySet(inf.GetDisableWriters())
+	userInfallibleMethods = loadKeySet(inf.GetMethods(), "methods")
+	userInfallibleFuncs = loadKeySet(inf.GetFunctions(), "functions")
+	userInfallibleWriters = loadKeySet(inf.GetWriters(), "writers")
+	disabledStdlibMethods = loadKeySet(inf.GetDisableMethods(), "disable_methods")
+	disabledStdlibFuncs = loadKeySet(inf.GetDisableFunctions(), "disable_functions")
+	disabledStdlibWriters = loadKeySet(inf.GetDisableWriters(), "disable_writers")
 }
 
 // isInfallibleErrorReturn reports whether the call targets a stdlib API
@@ -189,39 +226,56 @@ func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info) bool {
 	if info == nil {
 		return false
 	}
-	sel, ok := call.Fun.(*ast.SelectorExpr)
+	switch fn := call.Fun.(type) {
+	case *ast.SelectorExpr:
+		// Method calls live in info.Selections (not info.Uses).
+		// Package-qualified function calls (e.g. fmt.Println) are not
+		// selections — sel.X is a package identifier — so they fall
+		// through to the package-level function path.
+		if selection := info.Selections[fn]; selection != nil {
+			return isInfallibleMethodCall(selection)
+		}
+		return isInfallibleFuncCall(info.ObjectOf(fn.Sel), call, info)
+	case *ast.Ident:
+		// Bare identifier call: an intra-package function or a name
+		// brought in via dot-import.
+		return isInfallibleFuncCall(info.ObjectOf(fn), call, info)
+	}
+	return false
+}
+
+// isInfallibleMethodCall checks whether a method-selection's receiver type
+// and method name fall into the infallible-methods allowlist (built-in or
+// user-registered, with built-in entries masked by the user's disable list).
+func isInfallibleMethodCall(selection *types.Selection) bool {
+	fn, ok := selection.Obj().(*types.Func)
 	if !ok {
 		return false
 	}
-
-	// Method calls live in info.Selections (not info.Uses). Package-level
-	// function calls (e.g. fmt.Println) are not selections — sel.X is a
-	// package identifier — so they fall through to info.ObjectOf.
-	if selection := info.Selections[sel]; selection != nil {
-		fn, ok := selection.Obj().(*types.Func)
-		if !ok {
-			return false
-		}
-		recvType := selection.Recv()
-		if ptr, ok := recvType.(*types.Pointer); ok {
-			recvType = ptr.Elem()
-		}
-		named, ok := recvType.(*types.Named)
-		if !ok {
-			return false
-		}
-		obj := named.Obj()
-		if obj == nil || obj.Pkg() == nil {
-			return false
-		}
-		key := obj.Pkg().Path() + "." + obj.Name() + "." + fn.Name()
-		if infallibleStdlibMethods[key] && !disabledStdlibMethods.Match(key) {
-			return true
-		}
-		return userInfallibleMethods.Match(key)
+	recvType := selection.Recv()
+	if ptr, ok := recvType.(*types.Pointer); ok {
+		recvType = ptr.Elem()
 	}
+	named, ok := recvType.(*types.Named)
+	if !ok {
+		return false
+	}
+	obj := named.Obj()
+	if obj == nil || obj.Pkg() == nil {
+		return false
+	}
+	key := obj.Pkg().Path() + "." + obj.Name() + "." + fn.Name()
+	if infallibleStdlibMethods[key] && !disabledStdlibMethods.Match(key) {
+		return true
+	}
+	return userInfallibleMethods.Match(key)
+}
 
-	fn, ok := info.ObjectOf(sel.Sel).(*types.Func)
+// isInfallibleFuncCall checks whether a non-method call targets an
+// infallible package-level function (built-in or user-registered) or a
+// transitively-infallible writer-arg function.
+func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info) bool {
+	fn, ok := obj.(*types.Func)
 	if !ok || fn.Pkg() == nil {
 		return false
 	}

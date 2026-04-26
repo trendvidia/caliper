@@ -347,8 +347,9 @@ infallible {
 ```
 
 Globs use `*` to match any sequence of characters (including `.` and `/`);
-all other characters are literal. Bad globs are silently skipped — config
-errors should never crash analysis.
+all other characters are literal. Other shell-glob meta-characters (`?`,
+`[`, `]`, `{`, `}`) are not supported — entries that contain them are
+skipped at config load and a diagnostic is written to stderr.
 
 ## Next Steps
 

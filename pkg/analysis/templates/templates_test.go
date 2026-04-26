@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -469,6 +470,31 @@ func use() {
 	}
 }
 
+func TestUncheckedError_ConfigUserFunctionBareCall(t *testing.T) {
+	// Project-local function called without a package qualifier (the
+	// common case inside its own package). Must match the user-registered
+	// allowlist via *ast.Ident, not just *ast.SelectorExpr.
+	src := `package testpkg
+
+func Trace(msg string) error { return nil }
+
+func use() {
+	Trace("x")
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		Functions: []string{"testpkg.Trace"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
+		t.Errorf("expected 0 findings (intra-package bare call to allowlisted Trace), got %d", got)
+	}
+}
+
 func TestUncheckedError_ConfigUserWriter(t *testing.T) {
 	// User registers a third-party writer type as infallible; calls of
 	// fmt.Fprint*(w, ...) where w is that type become transitively safe.
@@ -548,6 +574,43 @@ func use() {
 	findings := RunTemplate(engine, tmpl)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 3 {
 		t.Errorf("expected 3 findings (disable glob unmasks Write/WriteByte/WriteString), got %d", got)
+	}
+}
+
+func TestUncheckedError_ConfigBadGlobDiagnostic(t *testing.T) {
+	// A malformed glob (unmatched bracket) should be skipped without
+	// crashing, and a diagnostic should be written to stderr so the user
+	// can see why their pattern isn't taking effect. Valid entries in
+	// the same list should still apply.
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	origStderr := os.Stderr
+	os.Stderr = w
+	defer func() { os.Stderr = origStderr }()
+
+	ConfigureInfallible(&pb.Infallible{
+		Methods: []string{
+			"testpkg.Logger.De?bug",     // '?' is not a supported wildcard
+			"testpkg.Logger.GoodMethod", // valid exact entry
+		},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	w.Close()
+	out, _ := io.ReadAll(r)
+	stderr := string(out)
+
+	if !strings.Contains(stderr, "infallible.methods") {
+		t.Errorf("expected diagnostic mentioning infallible.methods, got: %q", stderr)
+	}
+	if !strings.Contains(stderr, "De?bug") {
+		t.Errorf("expected diagnostic to quote the bad entry, got: %q", stderr)
+	}
+	// Valid entry must still match.
+	if !userInfallibleMethods.Match("testpkg.Logger.GoodMethod") {
+		t.Error("expected valid entry to remain registered after bad glob was skipped")
 	}
 }
 

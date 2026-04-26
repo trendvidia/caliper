@@ -237,6 +237,14 @@ engine {
   build_tags = ["integration"]
 }
 patterns = ["patterns/*.gcl"]
+
+# Extend find_unchecked_error's allowlist with project-local APIs whose
+# error returns are known not to occur in practice. Entries support `*`
+# globs. See docs/getting-started.md for the full reference.
+infallible {
+  methods = ["github.com/myorg/mylib.Logger.*"]
+  writers = ["github.com/myorg/mylib.NopWriter"]
+}
 ```
 
 ## License
