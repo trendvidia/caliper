@@ -170,7 +170,10 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 // For GOROOT/src, it uses "std" to load the stdlib. Otherwise "./...".
 func detectPatterns(dir string) []string {
 	if stdRoot := findStdlibRoot(dir); stdRoot != "" {
-		abs, _ := filepath.Abs(dir)
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			abs = dir
+		}
 		if abs == stdRoot {
 			return []string{"std"}
 		}
@@ -184,7 +187,10 @@ func detectPatterns(dir string) []string {
 	goroot := os.Getenv("GOROOT")
 	if goroot != "" {
 		srcDir := filepath.Join(goroot, "src")
-		abs, _ := filepath.Abs(dir)
+		abs, err := filepath.Abs(dir)
+		if err != nil {
+			abs = dir
+		}
 		if rel, err := filepath.Rel(srcDir, abs); err == nil && !strings.HasPrefix(rel, "..") {
 			if rel == "." {
 				return []string{"std"}
@@ -238,7 +244,10 @@ func isStdlibDir(abs string) bool {
 
 // isGoRootSrc is an alias for backward compatibility with tests.
 func isGoRootSrc(dir string) bool {
-	abs, _ := filepath.Abs(dir)
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		abs = dir
+	}
 	return isStdlibDir(abs)
 }
 

@@ -202,7 +202,10 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 // invalidateEngine removes the cached engine for the given path.
 // Must be called after transforms that modify files on disk.
 func (s *Server) invalidateEngine(path string) {
-	absPath, _ := filepath.Abs(path)
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
 	s.cache.invalidate(absPath)
 }
 
@@ -946,7 +949,10 @@ func (s *Server) handleRunPatterns(ctx context.Context, req mcpsdk.CallToolReque
 	if gclFile != "" {
 		gclPaths = []string{gclFile}
 	} else {
-		absPath, _ := filepath.Abs(path)
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			absPath = path
+		}
 		gclPaths = s.cfg.GCLPatterns(absPath)
 	}
 
