@@ -100,7 +100,11 @@ func setupStderrTee() func() {
 	}
 
 	os.Stderr = wr
-	mw := io.MultiWriter(origStderr, f)
+	// Prefix log lines with timestamps so disconnects can be correlated
+	// with the user's actions in the MCP transcript. The original stderr
+	// (the MCP client) gets the raw bytes — only the file gets the
+	// prefix to keep stderr-as-protocol-channel uncluttered.
+	mw := io.MultiWriter(origStderr, &lineStampWriter{w: f})
 
 	done := make(chan struct{})
 	go func() {
@@ -116,4 +120,36 @@ func setupStderrTee() func() {
 		_ = f.Close() //caliper:ignore error_swallow
 		os.Stderr = origStderr
 	}
+}
+
+// lineStampWriter prefixes every newline-terminated line with an
+// RFC3339-with-millis timestamp. Partial writes (no trailing newline)
+// are buffered until the line completes so the prefix lands at the
+// start of each line, not mid-line.
+type lineStampWriter struct {
+	w   io.Writer
+	buf []byte
+}
+
+func (l *lineStampWriter) Write(p []byte) (int, error) {
+	l.buf = append(l.buf, p...)
+	for {
+		nl := -1
+		for i, b := range l.buf {
+			if b == '\n' {
+				nl = i
+				break
+			}
+		}
+		if nl < 0 {
+			break
+		}
+		stamp := time.Now().UTC().Format("2006-01-02T15:04:05.000Z ")
+		out := append([]byte(stamp), l.buf[:nl+1]...)
+		if _, err := l.w.Write(out); err != nil {
+			return len(p), err
+		}
+		l.buf = l.buf[nl+1:]
+	}
+	return len(p), nil
 }

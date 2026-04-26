@@ -19,6 +19,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 	mcpserver "github.com/mark3labs/mcp-go/server"
@@ -77,9 +78,14 @@ func NewServer() (*Server, error) {
 // Run starts the MCP server on stdio.
 func (s *Server) Run(ctx context.Context) error {
 	stdio := mcpserver.NewStdioServer(s.mcp)
+	// Wrap stdin with a diagnostic reader that logs EOF and per-read
+	// stats — useful for diagnosing "the MCP client closed the
+	// connection" symptoms that look like silent disconnects.
+	in := &diagReader{r: os.Stdin, started: time.Now()}
+	defer in.logExit()
 	// Wrap stdout with a mutex to prevent interleaved writes between
 	// the main message handler and the notification goroutine.
-	return stdio.Listen(ctx, os.Stdin, &syncWriter{w: os.Stdout})
+	return stdio.Listen(ctx, in, &syncWriter{w: os.Stdout})
 }
 
 // syncWriter wraps a writer with a mutex to prevent concurrent writes
@@ -94,6 +100,51 @@ func (sw *syncWriter) Write(p []byte) (int, error) {
 	sw.mu.Lock()
 	defer sw.mu.Unlock()
 	return sw.w.Write(p)
+}
+
+// diagReader wraps os.Stdin so we can log when reads complete, when
+// EOF arrives, and how many bytes/messages were processed before the
+// connection closed. The MCP stdio transport's "the client closed
+// stdin → server returns nil → process exits" path is otherwise
+// indistinguishable from a clean shutdown.
+type diagReader struct {
+	r       io.Reader
+	started time.Time
+	mu      sync.Mutex
+	bytes   int64
+	reads   int64
+	eofAt   time.Time
+}
+
+func (d *diagReader) Read(p []byte) (int, error) {
+	n, err := d.r.Read(p)
+	d.mu.Lock()
+	d.bytes += int64(n)
+	d.reads++
+	if err == io.EOF {
+		d.eofAt = time.Now()
+	}
+	d.mu.Unlock()
+	if err == io.EOF {
+		fmt.Fprintf(os.Stderr,
+			"caliper: stdin EOF after %s (%d reads, %d bytes total)\n",
+			time.Since(d.started).Round(time.Millisecond), d.reads, d.bytes)
+	} else if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"caliper: stdin read error after %s (%d reads, %d bytes): %v\n",
+			time.Since(d.started).Round(time.Millisecond), d.reads, d.bytes, err)
+	}
+	return n, err
+}
+
+func (d *diagReader) logExit() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.eofAt.IsZero() {
+		fmt.Fprintf(os.Stderr,
+			"caliper: stdin still open at exit (%d reads, %d bytes)\n",
+			d.reads, d.bytes)
+	}
 }
 
 // safeHandler wraps a tool handler with panic recovery and logging so that
