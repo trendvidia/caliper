@@ -95,7 +95,7 @@ func setupStderrTee() func() {
 	rd, wr, err := os.Pipe()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "caliper: stderr pipe failed: %v\n", err)
-		_ = f.Close() //caliper:ignore unchecked_error
+		_ = f.Close() //caliper:ignore unchecked_error error_swallow
 		return func() {}
 	}
 
