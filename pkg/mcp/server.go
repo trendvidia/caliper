@@ -155,26 +155,35 @@ func (s *Server) defaultPath(path string) string {
 }
 
 // getEngine returns a cached engine for the given path, creating one on cache miss.
-func (s *Server) getEngine(path string) (*analysis.Engine, error) {
+//
+// The returned release function MUST be called (typically via defer) once
+// the caller is done using the engine. The returned mutex is held across
+// the engine's lifetime in this call, serializing concurrent tool calls
+// on the same codebase. This is required because go/types maps embedded
+// in the engine are not safe for concurrent reads.
+//
+// On error, release is a no-op closure (still safe to defer).
+func (s *Server) getEngine(path string) (*analysis.Engine, func(), error) {
 	return s.getEngineWithProgress(path, nil)
 }
 
 // getEngineWithProgress is like getEngine but sends progress notifications
 // during package loading when a progress token is present.
-func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.Engine, error) {
+func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.Engine, func(), error) {
+	noop := func() {}
+
 	absPath, err := filepath.Abs(path)
 	if err != nil {
-		return nil, fmt.Errorf("resolving path: %w", err)
+		return nil, noop, fmt.Errorf("resolving path: %w", err)
 	}
 
-	// Lock this path to prevent concurrent loads/analyses.
-	// Multiple concurrent tool calls on the same codebase are serialized
-	// to prevent races on shared type info in go/types maps.
 	unlock := s.cache.lock(absPath)
-	defer unlock()
+	// From here on, on any error path, unlock() must be called before
+	// returning. On the success path, ownership of unlock transfers to
+	// the caller, who is responsible for calling it once analysis is done.
 
 	if eng := s.cache.get(absPath); eng != nil {
-		return eng, nil
+		return eng, unlock, nil
 	}
 
 	if prog != nil {
@@ -188,7 +197,8 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 	}
 	eng, err := analysis.NewEngineWithOptions(absPath, opts)
 	if err != nil {
-		return nil, err
+		unlock()
+		return nil, noop, err
 	}
 
 	if prog != nil {
@@ -196,7 +206,7 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 	}
 
 	s.cache.put(absPath, eng)
-	return eng, nil
+	return eng, unlock, nil
 }
 
 // invalidateEngine removes the cached engine for the given path.
@@ -240,10 +250,11 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 	}
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 	if prog.active() {
 		prog.send(2, 3, "Matching patterns...")
 	}
@@ -313,10 +324,11 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	// Parse desired usage kinds.
 	wantAll := true
@@ -447,10 +459,11 @@ func (s *Server) handleFindResourceLeak(ctx context.Context, req mcpsdk.CallTool
 	}
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	if prog.active() {
 		prog.send(2, 3, "Analyzing resource leaks...")
@@ -475,10 +488,11 @@ func (s *Server) handleFindUncheckedError(ctx context.Context, req mcpsdk.CallTo
 	}
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	if prog.active() {
 		prog.send(2, 3, "Checking for unchecked errors...")
@@ -501,10 +515,11 @@ func (s *Server) handleFindLockViolation(ctx context.Context, req mcpsdk.CallToo
 	}
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	if prog.active() {
 		prog.send(2, 3, "Checking lock discipline...")
@@ -520,10 +535,11 @@ func (s *Server) handleFindNilDeref(ctx context.Context, req mcpsdk.CallToolRequ
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	var funcPattern *patterns.Pattern
 	if fp := stringParam(req, "func_pattern"); fp != "" {
@@ -548,10 +564,11 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	fromPat, err := patterns.Compile(fromPattern)
 	if err != nil {
@@ -726,10 +743,11 @@ func (s *Server) handleApplyTransform(ctx context.Context, req mcpsdk.CallToolRe
 	path = s.defaultPath(path)
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 	if prog.active() {
 		prog.send(2, 3, "Applying transformation...")
 	}
@@ -776,10 +794,11 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 		return errorResult("Invalid rules format: %v", err), nil
 	}
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	migration := transform.NewAPIMigration(engine, rules, updateImports)
 
@@ -806,10 +825,11 @@ func (s *Server) handleAddMissingCleanup(ctx context.Context, req mcpsdk.CallToo
 
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	inserter, err := transform.NewCleanupInserter(engine, acquirePattern, releaseMethod, style)
 	if err != nil {
@@ -939,10 +959,11 @@ func (s *Server) handleRunPatterns(ctx context.Context, req mcpsdk.CallToolReque
 	ruleName := stringParam(req, "rule")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	// Determine which .gcl files to load.
 	var gclPaths []string
@@ -997,10 +1018,11 @@ func (s *Server) handleFindGoroutineLeak(ctx context.Context, req mcpsdk.CallToo
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.GoroutineLeak{}
 	findings := templates.RunTemplate(engine, tmpl)
@@ -1011,10 +1033,11 @@ func (s *Server) handleFindSQLInjection(ctx context.Context, req mcpsdk.CallTool
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.SQLInjection{}
 	findings := templates.RunTemplate(engine, tmpl)
@@ -1025,10 +1048,11 @@ func (s *Server) handleFindRaceCondition(ctx context.Context, req mcpsdk.CallToo
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.RaceCondition{}
 	findings := templates.RunTemplate(engine, tmpl)
@@ -1041,10 +1065,11 @@ func (s *Server) handleFindContextMisuse(ctx context.Context, req mcpsdk.CallToo
 
 	flagTodo := boolParamDefault(req, "flag_todo", true)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.ContextMisuse{FlagTodo: flagTodo}
 	findings := templates.RunTemplate(engine, tmpl)
@@ -1058,10 +1083,11 @@ func (s *Server) handleFindTaintFlow(ctx context.Context, req mcpsdk.CallToolReq
 	path = s.defaultPath(path)
 
 	prog := newProgress(ctx, req)
-	engine, err := s.getEngineWithProgress(path, prog)
+	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	if prog.active() {
 		prog.send(2, 4, "Building call graph...")
@@ -1137,10 +1163,11 @@ func (s *Server) handleFindCallSites(ctx context.Context, req mcpsdk.CallToolReq
 		return errorResult("Invalid function_pattern: %v", err), nil
 	}
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	algo := analysis.AlgoCHA
 	switch algoStr {
@@ -1179,10 +1206,11 @@ func (s *Server) handleExplainFinding(ctx context.Context, req mcpsdk.CallToolRe
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	// Select the template based on kind.
 	tmpl := s.templateForKind(kind)
@@ -1317,10 +1345,11 @@ func (s *Server) handleCheckInterface(ctx context.Context, req mcpsdk.CallToolRe
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	result := templates.CheckInterfaceSatisfaction(engine, typeName, ifaceName)
 	return jsonResult(result), nil
@@ -1330,10 +1359,11 @@ func (s *Server) handleFindSliceAppendRace(ctx context.Context, req mcpsdk.CallT
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.SliceAppendRace{}
 	findings := templates.RunTemplate(engine, tmpl)
@@ -1344,10 +1374,11 @@ func (s *Server) handleFindErrorSwallow(ctx context.Context, req mcpsdk.CallTool
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.ErrorSwallow{
 		IncludeDropped: boolParam(req, "include_dropped"),
@@ -1360,10 +1391,11 @@ func (s *Server) handleFindDeferInLoop(ctx context.Context, req mcpsdk.CallToolR
 	path := stringParam(req, "path")
 	path = s.defaultPath(path)
 
-	engine, err := s.getEngine(path)
+	engine, release, err := s.getEngine(path)
 	if err != nil {
 		return errorResult("Failed to load packages: %v", err), nil
 	}
+	defer release()
 
 	tmpl := &templates.DeferInLoop{}
 	findings := templates.RunTemplate(engine, tmpl)
