@@ -94,8 +94,8 @@ func setupStderrTee() func() {
 	// original stderr (the MCP client), and (b) the log file.
 	rd, wr, err := os.Pipe()
 	if err != nil {
-		fmt.Fprintf(origStderr, "caliper: stderr pipe failed: %v\n", err)
-		f.Close()
+		fmt.Fprintf(os.Stderr, "caliper: stderr pipe failed: %v\n", err)
+		_ = f.Close() //caliper:ignore unchecked_error
 		return func() {}
 	}
 
@@ -104,16 +104,16 @@ func setupStderrTee() func() {
 
 	done := make(chan struct{})
 	go func() {
-		_, _ = io.Copy(mw, rd)
+		_, _ = io.Copy(mw, rd) //caliper:ignore error_swallow
 		close(done)
 	}()
 
 	fmt.Fprintf(os.Stderr, "caliper: stderr teed to %s\n", logPath)
 
 	return func() {
-		_ = wr.Close()
+		_ = wr.Close() //caliper:ignore error_swallow
 		<-done
-		_ = f.Close()
+		_ = f.Close() //caliper:ignore error_swallow
 		os.Stderr = origStderr
 	}
 }
