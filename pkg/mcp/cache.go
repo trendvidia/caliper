@@ -21,6 +21,15 @@ type engineCache struct {
 	order   *list.List // front = most recently used
 	maxSize int
 
+	// pathLocks serializes both first-load AND subsequent analysis on the
+	// same path. Distinct from per-cacheEntry locks because the lock must
+	// exist BEFORE any engine is cached — otherwise a fan-out of N
+	// parallel tool calls on a cold path triggers N concurrent
+	// packages.Load invocations, which hammer the OS (file descriptors,
+	// subprocess spawns, memory) and can panic in goroutines that aren't
+	// covered by the stdio handler's recovery, killing the process.
+	pathLocks map[string]*sync.Mutex
+
 	// Stats
 	hits   int64
 	misses int64
@@ -29,7 +38,6 @@ type engineCache struct {
 type cacheEntry struct {
 	path   string
 	engine *analysis.Engine
-	mu     sync.Mutex // serializes concurrent analysis on the same engine
 }
 
 func newEngineCache(maxSize int) *engineCache {
@@ -37,9 +45,10 @@ func newEngineCache(maxSize int) *engineCache {
 		maxSize = defaultMaxCacheEntries
 	}
 	return &engineCache{
-		entries: make(map[string]*list.Element),
-		order:   list.New(),
-		maxSize: maxSize,
+		entries:   make(map[string]*list.Element),
+		order:     list.New(),
+		maxSize:   maxSize,
+		pathLocks: make(map[string]*sync.Mutex),
 	}
 }
 
@@ -71,30 +80,35 @@ func (c *engineCache) get(absPath string) *analysis.Engine {
 	return nil
 }
 
-// lock acquires the per-engine mutex for the given path, preventing
-// concurrent analysis on the same engine. Returns an unlock function.
-// If the engine isn't cached, returns a no-op.
+// lock acquires the per-path mutex, serializing both first-load and
+// subsequent analysis for the given path. Returns an unlock function.
+//
+// On a cold path (no cached engine yet) this still returns a real
+// mutex — that's the critical fix for the parallel-fan-out crash. If
+// any cached engine covers absPath as a parent directory, that parent
+// path's mutex is reused so sub-path requests serialize against the
+// same engine.
 func (c *engineCache) lock(absPath string) func() {
 	c.mu.Lock()
-	var entry *cacheEntry
-	if elem, ok := c.entries[absPath]; ok {
-		entry = elem.Value.(*cacheEntry)
-	} else {
+	key := absPath
+	if _, ok := c.entries[absPath]; !ok {
 		for _, elem := range c.entries {
 			e := elem.Value.(*cacheEntry)
 			if isSubPath(e.path, absPath) {
-				entry = e
+				key = e.path
 				break
 			}
 		}
 	}
+	pl, ok := c.pathLocks[key]
+	if !ok {
+		pl = &sync.Mutex{}
+		c.pathLocks[key] = pl
+	}
 	c.mu.Unlock()
 
-	if entry == nil {
-		return func() {}
-	}
-	entry.mu.Lock()
-	return entry.mu.Unlock
+	pl.Lock()
+	return pl.Unlock
 }
 
 // put adds an engine to the cache, evicting the least recently used

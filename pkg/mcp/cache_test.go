@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
 )
@@ -111,6 +114,93 @@ func TestEngineCache_Invalidate(t *testing.T) {
 
 	// Invalidating nonexistent key should be a no-op.
 	c.invalidate("/bar")
+}
+
+func TestEngineCache_LockSerializesColdLoad(t *testing.T) {
+	// Regression: before the fix, lock() returned a no-op when no entry
+	// was cached for the path. A fan-out of N parallel tool calls on a
+	// cold path would all enter the load critical section concurrently,
+	// triggering N concurrent packages.Load invocations and crashing the
+	// MCP server. The lock must serialize first-load too.
+	c := newEngineCache(4)
+
+	const goroutines = 16
+	var (
+		inFlight int32
+		maxSeen  int32
+		wg       sync.WaitGroup
+	)
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		go func() {
+			defer wg.Done()
+			unlock := c.lock("/cold/path")
+			defer unlock()
+
+			n := atomic.AddInt32(&inFlight, 1)
+			defer atomic.AddInt32(&inFlight, -1)
+
+			// Track the high-water mark of concurrent holders.
+			for {
+				m := atomic.LoadInt32(&maxSeen)
+				if n <= m || atomic.CompareAndSwapInt32(&maxSeen, m, n) {
+					break
+				}
+			}
+
+			// Simulate the heavy packages.Load work the lock is meant
+			// to serialize.
+			time.Sleep(5 * time.Millisecond)
+		}()
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxSeen); got != 1 {
+		t.Errorf("expected at most 1 goroutine in critical section at a time, saw %d", got)
+	}
+}
+
+func TestEngineCache_LockReusesParentMutex(t *testing.T) {
+	// Sub-path requests must share the parent path's lock so that loads
+	// of /foo and /foo/bar serialize against the same engine creation.
+	c := newEngineCache(4)
+	c.put("/foo", (*analysis.Engine)(nil))
+
+	const goroutines = 8
+	var (
+		inFlight int32
+		maxSeen  int32
+		wg       sync.WaitGroup
+	)
+	wg.Add(goroutines)
+
+	for i := 0; i < goroutines; i++ {
+		path := "/foo"
+		if i%2 == 1 {
+			path = "/foo/sub"
+		}
+		go func(p string) {
+			defer wg.Done()
+			unlock := c.lock(p)
+			defer unlock()
+
+			n := atomic.AddInt32(&inFlight, 1)
+			defer atomic.AddInt32(&inFlight, -1)
+			for {
+				m := atomic.LoadInt32(&maxSeen)
+				if n <= m || atomic.CompareAndSwapInt32(&maxSeen, m, n) {
+					break
+				}
+			}
+			time.Sleep(2 * time.Millisecond)
+		}(path)
+	}
+	wg.Wait()
+
+	if got := atomic.LoadInt32(&maxSeen); got != 1 {
+		t.Errorf("expected /foo and /foo/sub to share a lock, but %d ran concurrently", got)
+	}
 }
 
 func TestIsSubPath(t *testing.T) {
