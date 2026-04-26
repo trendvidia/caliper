@@ -41,6 +41,14 @@ var infallibleStdlibMethods = map[string]bool{
 	// the interface match this entry.
 	"hash.Hash.Write": true,
 
+	// hash.Hash32 / hash.Hash64 embed hash.Hash and inherit the same
+	// "never returns an error" contract, but selection on a value of
+	// static type Hash32/Hash64 keys the receiver type as Hash32/Hash64,
+	// not the embedded Hash. Without explicit entries, fnv.New32a() and
+	// fnv.New64a() (which return Hash32/Hash64) get false positives.
+	"hash.Hash32.Write": true,
+	"hash.Hash64.Write": true,
+
 	// io.PipeReader/PipeWriter.CloseWithError: "always returns nil" per
 	// godoc.
 	"io.PipeReader.CloseWithError": true,

@@ -351,6 +351,32 @@ func writes() {
 	}
 }
 
+func TestUncheckedError_HashSubInterfaces(t *testing.T) {
+	// hash.Hash32 and hash.Hash64 embed hash.Hash and inherit the same
+	// "never returns an error" contract. Because the static type of the
+	// receiver is Hash32/Hash64 (not Hash), the allowlist needs explicit
+	// entries for each interface — fnv.New32a() and fnv.New64a() return
+	// Hash32/Hash64 respectively.
+	src := `package testpkg
+
+import "hash/fnv"
+
+func writes() {
+	h32 := fnv.New32a()
+	h32.Write([]byte("a"))
+
+	h64 := fnv.New64a()
+	h64.Write([]byte("b"))
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings for hash.Hash32/Hash64.Write, got %d: %s", got, findings[0].Message)
+	}
+}
+
 func TestUncheckedError_WriterArgInfallibleStdoutStderr(t *testing.T) {
 	// fmt.Fprint*/io.WriteString to os.Stdout or os.Stderr are
 	// conventional logging — silenced by value-based writer recognition.
