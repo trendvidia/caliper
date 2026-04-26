@@ -58,6 +58,14 @@ func (lv *LockViolation) checkMissingUnlock(ctx *TemplateContext) []Finding {
 			// Check AF(unlock) — unlock must happen on ALL paths.
 			violations := cfg.Reachable(ctx.CFG, block, unlockPred, cfg.AllPaths)
 			if len(violations) > 0 {
+				// Skip when the unlock obligation is transferred out
+				// of the function — i.e., the method value
+				// `mutex.Unlock` is returned, passed as an argument,
+				// or assigned. The caller is responsible for calling
+				// it, and analyzing that is out of scope here.
+				if isLockTransferred(ctx.Func.Func.Body, mutexName, unlockMethod) {
+					continue
+				}
 				findings = append(findings, Finding{
 					Kind:     "lock_violation",
 					Severity: "error",
@@ -140,6 +148,56 @@ func (lv *LockViolation) checkBlockingUnderLock(ctx *TemplateContext) []Finding 
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------
+
+// isLockTransferred reports whether `mutexName.methodName` appears in the
+// function body as a method-value reference (not a direct call) — i.e.,
+// returned, passed as an argument, or assigned. That pattern delegates
+// the unlock obligation to the caller, so the in-function "missing
+// unlock" check should not fire.
+func isLockTransferred(body *ast.BlockStmt, mutexName, methodName string) bool {
+	if body == nil {
+		return false
+	}
+
+	// Pass 1: collect every SelectorExpr that's the Fun of a CallExpr —
+	// these are calls, not method-value references.
+	calledSelectors := make(map[*ast.SelectorExpr]bool)
+	ast.Inspect(body, func(n ast.Node) bool {
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
+			calledSelectors[sel] = true
+		}
+		return true
+	})
+
+	// Pass 2: any mutex.method SelectorExpr not in calledSelectors is a
+	// method-value reference.
+	transferred := false
+	ast.Inspect(body, func(n ast.Node) bool {
+		if transferred {
+			return false
+		}
+		sel, ok := n.(*ast.SelectorExpr)
+		if !ok {
+			return true
+		}
+		if calledSelectors[sel] {
+			return true
+		}
+		ident, ok := sel.X.(*ast.Ident)
+		if !ok {
+			return true
+		}
+		if ident.Name == mutexName && sel.Sel.Name == methodName {
+			transferred = true
+		}
+		return !transferred
+	})
+	return transferred
+}
 
 // extractLockCall returns (mutexName, methodName) if the node is a Lock/Unlock call.
 func extractLockCall(node ast.Node) (string, string) {

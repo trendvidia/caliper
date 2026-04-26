@@ -789,6 +789,72 @@ func readLockMissing() {
 	}
 }
 
+func TestLockViolation_UnlockReturnedAsValue(t *testing.T) {
+	// Pattern: function locks, then returns the Unlock method value for
+	// the caller to invoke (e.g. via defer). The unlock obligation is
+	// transferred — must not be flagged as missing.
+	src := `package testpkg
+
+import "sync"
+
+func acquire() func() {
+	var mu sync.Mutex
+	mu.Lock()
+	return mu.Unlock
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &LockViolation{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "lock_violation")); got > 0 {
+		t.Errorf("expected no lock_violation when Unlock is returned as a method value, got %d", got)
+	}
+}
+
+func TestLockViolation_UnlockPassedAsArg(t *testing.T) {
+	// Pattern: function locks, then passes the Unlock method value to
+	// another function that will invoke it. Same transfer semantics.
+	src := `package testpkg
+
+import "sync"
+
+func register(fn func()) {}
+
+func acquire() {
+	var mu sync.Mutex
+	mu.Lock()
+	register(mu.Unlock)
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &LockViolation{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "lock_violation")); got > 0 {
+		t.Errorf("expected no lock_violation when Unlock is passed as arg, got %d", got)
+	}
+}
+
+func TestLockViolation_StillFlagsTrueMissing(t *testing.T) {
+	// Sanity: the transfer-detection escape hatch must NOT silence a
+	// genuine missing-unlock case.
+	src := `package testpkg
+
+import "sync"
+
+func leaked() {
+	var mu sync.Mutex
+	mu.Lock()
+	// no Unlock anywhere — true bug
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &LockViolation{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "lock_violation")) == 0 {
+		t.Error("expected lock_violation for genuine missing Unlock")
+	}
+}
+
 // --------------------------------------------------------------------------
 // NilDeref tests
 // --------------------------------------------------------------------------
