@@ -53,13 +53,13 @@ or structural idioms across a codebase. For control-flow properties
 				"description": "File or directory to search. Defaults to current working directory.",
 			},
 			"type_constraints": map[string]any{
-				"type":        "object",
-				"description": "Map of metavariable name → Go type string. Only matches where the metavariable has the specified type. Example: {\"x\": \"*os.File\", \"err\": \"error\"}",
+				"type":                 "object",
+				"description":          "Map of metavariable name → Go type string. Only matches where the metavariable has the specified type. Example: {\"x\": \"*os.File\", \"err\": \"error\"}",
 				"additionalProperties": map[string]any{"type": "string"},
 			},
 			"name_constraints": map[string]any{
-				"type":        "object",
-				"description": "Map of metavariable name → regex. Only matches where the bound identifier name matches the regex. Example: {\"fn\": \"^Test.*\", \"x\": \"^(db|conn)$\"}",
+				"type":                 "object",
+				"description":          "Map of metavariable name → regex. Only matches where the bound identifier name matches the regex. Example: {\"fn\": \"^Test.*\", \"x\": \"^(db|conn)$\"}",
 				"additionalProperties": map[string]any{"type": "string"},
 			},
 			"negative": map[string]any{
@@ -380,8 +380,8 @@ across the codebase. Always use preview mode first to verify the changes.`,
 				"description": "File or directory to transform. Defaults to current working directory.",
 			},
 			"type_constraints": map[string]any{
-				"type":        "object",
-				"description": "Type constraints on metavariables (same as find_pattern).",
+				"type":                 "object",
+				"description":          "Type constraints on metavariables (same as find_pattern).",
 				"additionalProperties": map[string]any{"type": "string"},
 			},
 			"preview": map[string]any{
@@ -804,47 +804,6 @@ organization-specific code policies.`,
 			},
 		},
 	},
-}
-
-// allTools returns all tools the MCP server exposes.
-func allTools() []mcpsdk.Tool {
-	return []mcpsdk.Tool{
-		// Pattern matching.
-		findPatternTool,
-		findTypeUsageTool,
-
-		// Control flow analysis.
-		findResourceLeakTool,
-		findUncheckedErrorTool,
-		findLockViolationTool,
-		findNilDerefTool,
-		checkPathPropertyTool,
-
-		// Transformations.
-		applyTransformTool,
-		migrateAPITool,
-		addMissingCleanupTool,
-
-		// Inspection.
-		explainMatchTool,
-		listEquivalencesTool,
-
-		// Pattern language (Phase 5).
-		runPatternsTool,
-
-		// Advanced analysis (Phase 4).
-		findGoroutineLeakTool,
-		findSQLInjectionTool,
-		findRaceConditionTool,
-		findContextMisuseTool,
-		findTaintFlowTool,
-		findCallSitesTool,
-		findDeferInLoopTool,
-		findErrorSwallowTool,
-		findSliceAppendRaceTool,
-		checkInterfaceTool,
-		explainFindingTool,
-	}
 }
 
 var explainFindingTool = mcpsdk.Tool{

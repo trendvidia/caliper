@@ -29,11 +29,8 @@ func TestEngineCache_PutAndGet(t *testing.T) {
 		t.Errorf("expected size 1, got %d", c.size())
 	}
 
-	// Hit on exact path.
-	eng := c.get("/foo")
-	if eng != nil {
-		// We stored nil, so getting nil back is correct.
-	}
+	// Hit on exact path. We stored nil, so getting nil back is correct.
+	_ = c.get("/foo")
 	hits, _ = c.stats()
 	if hits != 1 {
 		t.Errorf("expected 1 hit, got %d", hits)

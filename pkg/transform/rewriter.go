@@ -26,11 +26,11 @@ import (
 
 // Change describes a single transformation applied to a file.
 type Change struct {
-	File     string `json:"file"`
-	Line     int    `json:"line"`
-	Before   string `json:"before"`   // original code fragment
-	After    string `json:"after"`    // transformed code fragment
-	Applied  bool   `json:"applied"`  // true if actually written (false in preview)
+	File    string `json:"file"`
+	Line    int    `json:"line"`
+	Before  string `json:"before"`  // original code fragment
+	After   string `json:"after"`   // transformed code fragment
+	Applied bool   `json:"applied"` // true if actually written (false in preview)
 }
 
 // Result is the outcome of a transformation.

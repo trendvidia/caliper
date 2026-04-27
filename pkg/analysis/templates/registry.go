@@ -20,13 +20,13 @@ import (
 
 // Finding represents a single issue found by a template.
 type Finding struct {
-	Kind        string              `json:"kind"`
-	Severity    string              `json:"severity"` // "error", "warning", "info"
-	Message     string              `json:"message"`
+	Kind        string                `json:"kind"`
+	Severity    string                `json:"severity"` // "error", "warning", "info"
+	Message     string                `json:"message"`
 	Location    analysis.FileLocation `json:"location"`
-	Explanation string              `json:"explanation"`
-	Suggestion  string              `json:"suggestion,omitempty"`
-	Path        []int               `json:"path,omitempty"` // CFG block IDs for the violating path
+	Explanation string                `json:"explanation"`
+	Suggestion  string                `json:"suggestion,omitempty"`
+	Path        []int                 `json:"path,omitempty"` // CFG block IDs for the violating path
 }
 
 // Template is the interface for all analysis templates.
@@ -43,7 +43,7 @@ type TemplateContext struct {
 	Engine     *analysis.Engine
 	Func       *analysis.FuncContext
 	CFG        *cfg.Graph
-	Pattern    *patterns.Pattern                // optional, depends on the template
+	Pattern    *patterns.Pattern // optional, depends on the template
 	Fset       *token.FileSet
 	IPC        *analysis.InterProceduralContext // optional, nil for intra-procedural
 	Infallible *InfallibleState                 // project-local infallibility config; nil = none

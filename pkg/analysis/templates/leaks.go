@@ -120,27 +120,6 @@ func (rl *ResourceLeak) buildReleasePredicate(resourceVar string) cfg.NodePredic
 	}
 }
 
-// Also check for defer $resource.Release().
-func (rl *ResourceLeak) buildDeferReleasePredicate(resourceVar string) cfg.NodePredicate {
-	return func(_ *cfg.Block, node ast.Node) bool {
-		deferStmt, ok := node.(*ast.DeferStmt)
-		if !ok {
-			return false
-		}
-		sel, ok := deferStmt.Call.Fun.(*ast.SelectorExpr)
-		if !ok {
-			return false
-		}
-		if sel.Sel.Name != rl.ReleaseMethod {
-			return false
-		}
-		if ident, ok := sel.X.(*ast.Ident); ok {
-			return ident.Name == resourceVar
-		}
-		return false
-	}
-}
-
 // --------------------------------------------------------------------------
 // Helpers
 // --------------------------------------------------------------------------

@@ -20,7 +20,7 @@ type LoopInfo struct {
 type LoopIteration int
 
 const (
-	FirstIteration      LoopIteration = iota
+	FirstIteration LoopIteration = iota
 	SubsequentIteration
 	NotInLoop
 )

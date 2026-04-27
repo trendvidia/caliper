@@ -134,7 +134,7 @@ func NeverBetween(g *Graph, from, to, excluded NodePredicate) []PathResult {
 				}
 
 				tainted := cur.tainted
-				var taintNode ast.Node = cur.node
+				taintNode := cur.node
 
 				// Check if successor contains excluded pattern.
 				// Use ast.Inspect to walk into child nodes, matching
@@ -292,9 +292,7 @@ func Dominates(g *Graph, dominator, target NodePredicate) bool {
 			continue
 		}
 
-		for _, succ := range cur.Succs {
-			queue = append(queue, succ)
-		}
+		queue = append(queue, cur.Succs...)
 	}
 
 	return true

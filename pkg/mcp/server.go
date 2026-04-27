@@ -28,10 +28,10 @@ import (
 	"github.com/trendvidia/caliper/pkg/analysis"
 	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 	"github.com/trendvidia/caliper/pkg/analysis/patterns"
-	"github.com/trendvidia/caliper/pkg/gcl"
 	"github.com/trendvidia/caliper/pkg/analysis/taint"
 	"github.com/trendvidia/caliper/pkg/analysis/templates"
 	"github.com/trendvidia/caliper/pkg/config"
+	"github.com/trendvidia/caliper/pkg/gcl"
 	"github.com/trendvidia/caliper/pkg/iso"
 	"github.com/trendvidia/caliper/pkg/transform"
 )
@@ -874,8 +874,8 @@ func (s *Server) handleCheckPathProperty(ctx context.Context, req mcpsdk.CallToo
 		"property":       property,
 		"from_pattern":   fromPattern,
 		"target_pattern": targetPattern,
-		"total": len(findings),
-		"hits":  findings,
+		"total":          len(findings),
+		"hits":           findings,
 	}), nil
 }
 
@@ -1790,7 +1790,7 @@ func (s *Server) findingsSummary(findings []templates.Finding) *mcpsdk.CallToolR
 		counts[f.Severity]++
 	}
 	return jsonResult(map[string]any{
-		"total": len(findings),
+		"total":       len(findings),
 		"by_severity": counts,
 	})
 }

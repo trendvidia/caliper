@@ -67,7 +67,7 @@ func CheckInterfaceSatisfaction(engine *analysis.Engine, typeName, ifaceName str
 			result.Missing = append(result.Missing, MethodInfo{
 				Name:      method.Name(),
 				Signature: method.Type().String(),
-				Reason:    fmt.Sprintf("found field, not method"),
+				Reason:    "found field, not method",
 			})
 			continue
 		}

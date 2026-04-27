@@ -85,10 +85,10 @@ var infallibleStdlibFuncs = map[string]bool{
 // caliper's own codebase (and most tools that pretty-print AST) the writer
 // is a local *bytes.Buffer.
 var writerArgInfallibleFuncs = map[string]bool{
-	"fmt.Fprint":       true,
-	"fmt.Fprintf":      true,
-	"fmt.Fprintln":     true,
-	"io.WriteString":   true,
+	"fmt.Fprint":        true,
+	"fmt.Fprintf":       true,
+	"fmt.Fprintln":      true,
+	"io.WriteString":    true,
 	"go/printer.Fprint": true,
 }
 

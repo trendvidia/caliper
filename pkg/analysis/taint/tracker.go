@@ -55,8 +55,8 @@ type TaintConfig struct {
 // TaintFlow describes one path from source to sink.
 type TaintFlow struct {
 	Source    analysis.FileLocation
-	Sink     analysis.FileLocation
-	Path     []TaintStep
+	Sink      analysis.FileLocation
+	Path      []TaintStep
 	Sanitized bool
 }
 

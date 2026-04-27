@@ -24,7 +24,7 @@ const (
 	BlockEntry BlockKind = iota
 	BlockExit
 	BlockNormal
-	BlockBranch   // if/switch condition
+	BlockBranch // if/switch condition
 	BlockReturn
 	BlockDefer
 	BlockPanic
@@ -34,11 +34,11 @@ const (
 type Block struct {
 	ID    int
 	Kind  BlockKind
-	Stmts []ast.Stmt   // statements in this block
-	Nodes []ast.Node   // all AST nodes (for matching)
-	Succs []*Block     // successor blocks
-	Preds []*Block     // predecessor blocks
-	Pos   token.Pos    // position of the first statement
+	Stmts []ast.Stmt // statements in this block
+	Nodes []ast.Node // all AST nodes (for matching)
+	Succs []*Block   // successor blocks
+	Preds []*Block   // predecessor blocks
+	Pos   token.Pos  // position of the first statement
 }
 
 // Graph is a control flow graph for a single function.
@@ -75,11 +75,11 @@ type builder struct {
 	fn           *ast.FuncDecl
 	blocks       []*Block
 	nextID       int
-	loopStack    []loopContext          // stack of enclosing loops/switches
-	labels       map[string]*Block      // label → target block (for goto)
-	gotos        map[string][]*Block    // label → blocks needing edges to that label (forward gotos)
-	pendingLabel string                 // label for the next loop/switch/select being built
-	defers       []*ast.DeferStmt       // defer statements in order of appearance
+	loopStack    []loopContext       // stack of enclosing loops/switches
+	labels       map[string]*Block   // label → target block (for goto)
+	gotos        map[string][]*Block // label → blocks needing edges to that label (forward gotos)
+	pendingLabel string              // label for the next loop/switch/select being built
+	defers       []*ast.DeferStmt    // defer statements in order of appearance
 }
 
 func (b *builder) newBlock(kind BlockKind) *Block {

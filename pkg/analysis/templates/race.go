@@ -329,17 +329,6 @@ func isDefinedInFunc(ctx *TemplateContext, name string) bool {
 	return false
 }
 
-// statementsAfter returns statements that come after the target statement
-// in the given statement list.
-func statementsAfter(stmts []ast.Stmt, target ast.Stmt) []ast.Stmt {
-	for i, stmt := range stmts {
-		if stmt.Pos() == target.Pos() {
-			return stmts[i+1:]
-		}
-	}
-	return nil
-}
-
 // findStmtsAfterGoStmt walks the function body to find the go statement at
 // any nesting depth and returns the remaining statements in that block.
 func findStmtsAfterGoStmt(body *ast.BlockStmt, goStmt *ast.GoStmt) []ast.Stmt {
@@ -589,26 +578,6 @@ func isChanType(t types.Type) bool {
 	}
 	_, ok := t.Underlying().(*types.Chan)
 	return ok
-}
-
-// isImmutableValueType checks if a type is an immutable value type (string,
-// bool, numeric) that is safe to capture read-only in a goroutine closure.
-func isImmutableValueType(t types.Type) bool {
-	if t == nil {
-		return false
-	}
-	b, ok := t.Underlying().(*types.Basic)
-	if !ok {
-		return false
-	}
-	switch b.Kind() {
-	case types.String, types.Bool,
-		types.Int, types.Int8, types.Int16, types.Int32, types.Int64,
-		types.Uint, types.Uint8, types.Uint16, types.Uint32, types.Uint64, types.Uintptr,
-		types.Float32, types.Float64, types.Complex64, types.Complex128:
-		return true
-	}
-	return false
 }
 
 // identWrittenInNode checks if a variable is assigned to (written) in any

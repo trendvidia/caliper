@@ -1,0 +1,27 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  default: none
+  enable:
+    - govet
+    - ineffassign
+    - misspell
+    - staticcheck
+    - unused
+    - unconvert
+    # errcheck intentionally disabled — caliper's own find_unchecked_error
+    # check (with the project-local .caliper.pxf allowlist) is the source
+    # of truth for this codebase. Running both produces duplicate noise.
+  exclusions:
+    paths:
+      - vendor
+      - testdata
+      - pkg/caliperpb/.*\.pb\.go$
+
+formatters:
+  enable:
+    - gofmt
