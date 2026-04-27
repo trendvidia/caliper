@@ -38,10 +38,11 @@ import (
 
 // Server is the Caliper MCP server.
 type Server struct {
-	mcp   *mcpserver.MCPServer
-	iso   *iso.Registry
-	cache *engineCache
-	cfg   *config.Config
+	mcp     *mcpserver.MCPServer
+	iso     *iso.Registry
+	cache   *engineCache
+	results *resultCache
+	cfg     *config.Config
 }
 
 // NewServer creates and configures the MCP server with all tools.
@@ -58,9 +59,10 @@ func NewServer() (*Server, error) {
 	}
 
 	s := &Server{
-		iso:   iso.NewRegistry(),
-		cache: newEngineCache(cacheSize),
-		cfg:   cfg,
+		iso:     iso.NewRegistry(),
+		cache:   newEngineCache(cacheSize),
+		results: newResultCache(""), // default $TMPDIR/caliper-cache
+		cfg:     cfg,
 	}
 
 	s.mcp = mcpserver.NewMCPServer(
@@ -145,6 +147,56 @@ func (d *diagReader) logExit() {
 	}
 }
 
+// cachedHandler wraps a read-only tool handler with persistent result
+// caching. The cache key is (toolName, absPath, args, source-fingerprint),
+// so cache hits only happen when the same call is made against
+// unchanged source. Apply only to read-only handlers — mutation tools
+// (apply_transform, etc.) must always run.
+func (s *Server) cachedHandler(toolName string, fn mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
+	return func(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+		args := req.GetArguments()
+		path := pathFromArgs(args)
+		if path == "" {
+			path = s.cfg.DefaultPath()
+		}
+		absPath, err := filepath.Abs(path)
+		if err != nil {
+			return fn(ctx, req)
+		}
+
+		key, err := s.results.keyFor(toolName, absPath, args)
+		if err != nil {
+			return fn(ctx, req) // can't fingerprint; proceed without cache
+		}
+
+		if cached := s.results.Get(key); cached != nil {
+			return cached, nil
+		}
+
+		result, err := fn(ctx, req)
+		// Only cache successful, non-error results. Errors may be
+		// transient (config issues, races) and stale errors would be
+		// confusing.
+		if err == nil && result != nil && !result.IsError {
+			s.results.Put(key, result)
+		}
+		return result, err
+	}
+}
+
+// pathFromArgs extracts the analysis-target path from common arg names.
+// Returns "" if no recognized path arg is set.
+func pathFromArgs(args map[string]any) string {
+	for _, k := range []string{"path", "file_path"} {
+		if v, ok := args[k]; ok {
+			if s, ok := v.(string); ok && s != "" {
+				return s
+			}
+		}
+	}
+	return ""
+}
+
 // safeHandler wraps a tool handler with panic recovery and logging so that
 // a crash in one analysis doesn't kill the entire MCP server process.
 func safeHandler(fn mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
@@ -161,38 +213,47 @@ func safeHandler(fn mcpserver.ToolHandlerFunc) mcpserver.ToolHandlerFunc {
 }
 
 func (s *Server) registerTools() {
-	add := func(tool mcpsdk.Tool, handler mcpserver.ToolHandlerFunc) {
+	// addRO registers a read-only analysis tool with persistent
+	// result caching wrapped around it. Repeat calls with the same
+	// args against unchanged source return immediately.
+	addRO := func(tool mcpsdk.Tool, handler mcpserver.ToolHandlerFunc) {
+		s.mcp.AddTool(tool, safeHandler(s.cachedHandler(tool.Name, handler)))
+	}
+	// addMut registers a mutation tool (rewrites files). Never cached
+	// — its effect depends on file state at call time, and running it
+	// changes the source which naturally invalidates other entries.
+	addMut := func(tool mcpsdk.Tool, handler mcpserver.ToolHandlerFunc) {
 		s.mcp.AddTool(tool, safeHandler(handler))
 	}
 
-	add(findPatternTool, s.handleFindPattern)
-	add(findTypeUsageTool, s.handleFindTypeUsage)
-	add(findResourceLeakTool, s.handleFindResourceLeak)
-	add(findUncheckedErrorTool, s.handleFindUncheckedError)
-	add(findLockViolationTool, s.handleFindLockViolation)
-	add(findNilDerefTool, s.handleFindNilDeref)
-	add(checkPathPropertyTool, s.handleCheckPathProperty)
-	add(applyTransformTool, s.handleApplyTransform)
-	add(migrateAPITool, s.handleMigrateAPI)
-	add(addMissingCleanupTool, s.handleAddMissingCleanup)
-	add(explainMatchTool, s.handleExplainMatch)
-	add(listEquivalencesTool, s.handleListEquivalences)
+	addRO(findPatternTool, s.handleFindPattern)
+	addRO(findTypeUsageTool, s.handleFindTypeUsage)
+	addRO(findResourceLeakTool, s.handleFindResourceLeak)
+	addRO(findUncheckedErrorTool, s.handleFindUncheckedError)
+	addRO(findLockViolationTool, s.handleFindLockViolation)
+	addRO(findNilDerefTool, s.handleFindNilDeref)
+	addRO(checkPathPropertyTool, s.handleCheckPathProperty)
+	addMut(applyTransformTool, s.handleApplyTransform)
+	addMut(migrateAPITool, s.handleMigrateAPI)
+	addMut(addMissingCleanupTool, s.handleAddMissingCleanup)
+	addRO(explainMatchTool, s.handleExplainMatch)
+	addRO(listEquivalencesTool, s.handleListEquivalences)
 
 	// Phase 5: Pattern language.
-	add(runPatternsTool, s.handleRunPatterns)
+	addRO(runPatternsTool, s.handleRunPatterns)
 
 	// Phase 4+: Advanced analysis.
-	add(findGoroutineLeakTool, s.handleFindGoroutineLeak)
-	add(findSQLInjectionTool, s.handleFindSQLInjection)
-	add(findRaceConditionTool, s.handleFindRaceCondition)
-	add(findContextMisuseTool, s.handleFindContextMisuse)
-	add(findTaintFlowTool, s.handleFindTaintFlow)
-	add(findCallSitesTool, s.handleFindCallSites)
-	add(findDeferInLoopTool, s.handleFindDeferInLoop)
-	add(findErrorSwallowTool, s.handleFindErrorSwallow)
-	add(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
-	add(checkInterfaceTool, s.handleCheckInterface)
-	add(explainFindingTool, s.handleExplainFinding)
+	addRO(findGoroutineLeakTool, s.handleFindGoroutineLeak)
+	addRO(findSQLInjectionTool, s.handleFindSQLInjection)
+	addRO(findRaceConditionTool, s.handleFindRaceCondition)
+	addRO(findContextMisuseTool, s.handleFindContextMisuse)
+	addRO(findTaintFlowTool, s.handleFindTaintFlow)
+	addRO(findCallSitesTool, s.handleFindCallSites)
+	addRO(findDeferInLoopTool, s.handleFindDeferInLoop)
+	addRO(findErrorSwallowTool, s.handleFindErrorSwallow)
+	addRO(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
+	addRO(checkInterfaceTool, s.handleCheckInterface)
+	addRO(explainFindingTool, s.handleExplainFinding)
 }
 
 // defaultPath returns the given path or the configured default.

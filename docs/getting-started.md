@@ -354,6 +354,25 @@ all other characters are literal. Other shell-glob meta-characters (`?`,
 `[`, `]`, `{`, `}`) are not supported — entries that contain them are
 skipped at config load and a diagnostic is written to stderr.
 
+## Result Caching
+
+Caliper caches read-only tool-call results to `$TMPDIR/caliper-cache/`
+keyed on a hash of (tool name, analysis path, arguments, source-file
+fingerprint). Repeat invocations of the same check with the same args
+against unchanged source return immediately, skipping the multi-second
+`go/packages` load. This particularly helps when MCP clients (e.g.,
+Claude Code) tear down and re-spawn the server between tool batches.
+
+The cache is invalidated automatically when any `.go` file under the
+analysis path changes (mtime or size). To clear it manually:
+
+```sh
+rm -rf "${TMPDIR}/caliper-cache"
+```
+
+Mutation tools (`apply_transform`, `migrate_api`, `add_missing_cleanup`)
+bypass the cache entirely.
+
 ## Next Steps
 
 - See the full [tool reference](../README.md) for all 24 MCP tools

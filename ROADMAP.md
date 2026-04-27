@@ -100,24 +100,36 @@ against `clair`, `appviewer`, and the trendvidia/go stdlib fork). These
 are smaller than a phase but high-leverage — most affect either daily UX
 or signal-to-noise of existing checks.
 
-### Engine cache persistence across MCP reconnects
+### Engine cache persistence across MCP reconnects ✓ (via result caching)
 
 Claude Code's MCP transport closes stdin after each tool batch, so caliper
 exits cleanly and is re-spawned on the next batch. Every batch therefore
 pays the full cold `packages.Load` cost (multi-second on a stdlib-sized
-project). The session log diagnostic confirmed this — every "disconnect"
-is `caliper: stdin EOF after Xs (N reads, M bytes)`, never a crash.
+project).
 
-- [ ] Persist parsed package data to `$TMPDIR/caliper-cache/<sha-of-absPath>/`
-  on shutdown
-- [ ] Lazy rehydration on first tool call against a cached path
-- [ ] Invalidate by go.mod / source-file mtime (cheap stat)
-- [ ] Open question: can `*types.Package` + `*ast.File` round-trip through
-  a serialization that's faster than re-parsing? (gob doesn't handle them
-  out of the box; may need a purpose-built format.)
+Implementation taken: **result caching** rather than engine persistence.
+Persisting `*types.Package` + `*ast.File` across processes turned out to
+be impractical (unexported state, circular references in go/types data
+that don't gob/json cleanly). Result caching achieves the same UX win
+for the common case — repeat tool calls on unchanged source — without
+the serialization-layer-for-go/types lift.
 
-Biggest UX win if achievable. Significant lift — roughly a phase-sized
-project on its own.
+- [x] Per-tool-call result cache at `$TMPDIR/caliper-cache/`
+  (`pkg/mcp/resultcache.go`)
+- [x] Cache key: `sha(toolName + absPath + argsJSON + source-fingerprint)`
+- [x] Source fingerprint: hash over `(relpath, mtime, size)` for every
+  `.go` file under the analysis path; skips `vendor/`, `testdata/`,
+  `.git/`, `node_modules/`. ~35ms on Go stdlib.
+- [x] Read-only tools wrapped with `cachedHandler`; mutation tools
+  (`apply_transform`, `migrate_api`, `add_missing_cleanup`) bypass
+  caching since they alter source.
+- [x] Per-process fingerprint memo so a fan-out of N tool calls walks
+  the source tree once.
+- [ ] Cache eviction (currently unbounded). Note in docs: clear via
+  `rm -rf $TMPDIR/caliper-cache`.
+- [ ] Future: explore `*types.Package` rehydration via go/gcexportdata
+  for cross-tool engine sharing. Bigger lift but eliminates the cold-
+  load tax even when args differ.
 
 ### Consolidate `find_unchecked_error` and `find_error_swallow`
 
