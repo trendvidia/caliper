@@ -196,4 +196,3 @@ func appendInLockedBlock(body *ast.BlockStmt, pos token.Pos) bool {
 	})
 	return deferredUnlock
 }
-
