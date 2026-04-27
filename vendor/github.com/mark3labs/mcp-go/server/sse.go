@@ -15,27 +15,42 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+
 	"github.com/mark3labs/mcp-go/mcp"
 )
 
 // sseSession represents an active SSE connection.
 type sseSession struct {
-	writer              http.ResponseWriter
-	flusher             http.Flusher
 	done                chan struct{}
 	eventQueue          chan string // Channel for queuing events
 	sessionID           string
 	requestID           atomic.Int64
 	notificationChannel chan mcp.JSONRPCNotification
 	initialized         atomic.Bool
-	loggingLevel		atomic.Value
-	tools               sync.Map // stores session-specific tools
+	loggingLevel        atomic.Value
+	tools               sync.Map     // stores session-specific tools
+	resources           sync.Map     // stores session-specific resources
+	resourceTemplates   sync.Map     // stores session-specific resource templates
+	clientInfo          atomic.Value // stores session-specific client info
+	clientCapabilities  atomic.Value // stores session-specific client capabilities
 }
 
 // SSEContextFunc is a function that takes an existing context and the current
 // request and returns a potentially modified context based on the request
 // content. This can be used to inject context values from headers, for example.
 type SSEContextFunc func(ctx context.Context, r *http.Request) context.Context
+
+// DynamicBasePathFunc allows the user to provide a function to generate the
+// base path for a given request and sessionID. This is useful for cases where
+// the base path is not known at the time of SSE server creation, such as when
+// using a reverse proxy or when the base path is dynamically generated. The
+// function should return the base path (e.g., "/mcp/tenant123").
+type DynamicBasePathFunc func(r *http.Request, sessionID string) string
+
+// SessionIDGenFunc is a function that produces a session ID for a new SSE connection.
+// It receives the request context and the HTTP request, and should return a session
+// identifier (string) or an error.
+type SessionIDGenFunc func(ctx context.Context, r *http.Request) (string, error)
 
 func (s *sseSession) SessionID() string {
 	return s.sessionID
@@ -55,16 +70,58 @@ func (s *sseSession) Initialized() bool {
 	return s.initialized.Load()
 }
 
-func(s *sseSession) SetLogLevel(level mcp.LoggingLevel) {
+func (s *sseSession) SetLogLevel(level mcp.LoggingLevel) {
 	s.loggingLevel.Store(level)
 }
 
-func(s *sseSession) GetLogLevel() mcp.LoggingLevel {
+func (s *sseSession) GetLogLevel() mcp.LoggingLevel {
 	level := s.loggingLevel.Load()
 	if level == nil {
 		return mcp.LoggingLevelError
 	}
 	return level.(mcp.LoggingLevel)
+}
+
+func (s *sseSession) GetSessionResources() map[string]ServerResource {
+	resources := make(map[string]ServerResource)
+	s.resources.Range(func(key, value any) bool {
+		if resource, ok := value.(ServerResource); ok {
+			resources[key.(string)] = resource
+		}
+		return true
+	})
+	return resources
+}
+
+func (s *sseSession) SetSessionResources(resources map[string]ServerResource) {
+	// Clear existing resources
+	s.resources.Clear()
+
+	// Set new resources
+	for name, resource := range resources {
+		s.resources.Store(name, resource)
+	}
+}
+
+func (s *sseSession) GetSessionResourceTemplates() map[string]ServerResourceTemplate {
+	templates := make(map[string]ServerResourceTemplate)
+	s.resourceTemplates.Range(func(key, value any) bool {
+		if template, ok := value.(ServerResourceTemplate); ok {
+			templates[key.(string)] = template
+		}
+		return true
+	})
+	return templates
+}
+
+func (s *sseSession) SetSessionResourceTemplates(templates map[string]ServerResourceTemplate) {
+	// Clear existing templates
+	s.resourceTemplates.Clear()
+
+	// Set new templates
+	for uriTemplate, template := range templates {
+		s.resourceTemplates.Store(uriTemplate, template)
+	}
 }
 
 func (s *sseSession) GetSessionTools() map[string]ServerTool {
@@ -80,10 +137,7 @@ func (s *sseSession) GetSessionTools() map[string]ServerTool {
 
 func (s *sseSession) SetSessionTools(tools map[string]ServerTool) {
 	// Clear existing tools
-	s.tools.Range(func(key, _ any) bool {
-		s.tools.Delete(key)
-		return true
-	})
+	s.tools.Clear()
 
 	// Set new tools
 	for name, tool := range tools {
@@ -91,10 +145,39 @@ func (s *sseSession) SetSessionTools(tools map[string]ServerTool) {
 	}
 }
 
+func (s *sseSession) GetClientInfo() mcp.Implementation {
+	if value := s.clientInfo.Load(); value != nil {
+		if clientInfo, ok := value.(mcp.Implementation); ok {
+			return clientInfo
+		}
+	}
+	return mcp.Implementation{}
+}
+
+func (s *sseSession) SetClientInfo(clientInfo mcp.Implementation) {
+	s.clientInfo.Store(clientInfo)
+}
+
+func (s *sseSession) SetClientCapabilities(clientCapabilities mcp.ClientCapabilities) {
+	s.clientCapabilities.Store(clientCapabilities)
+}
+
+func (s *sseSession) GetClientCapabilities() mcp.ClientCapabilities {
+	if value := s.clientCapabilities.Load(); value != nil {
+		if clientCapabilities, ok := value.(mcp.ClientCapabilities); ok {
+			return clientCapabilities
+		}
+	}
+	return mcp.ClientCapabilities{}
+}
+
 var (
-	_ ClientSession    		= (*sseSession)(nil)
-	_ SessionWithTools 		= (*sseSession)(nil)
-	_ SessionWithLogging	= (*sseSession)(nil)
+	_ ClientSession                = (*sseSession)(nil)
+	_ SessionWithTools             = (*sseSession)(nil)
+	_ SessionWithResources         = (*sseSession)(nil)
+	_ SessionWithResourceTemplates = (*sseSession)(nil)
+	_ SessionWithLogging           = (*sseSession)(nil)
+	_ SessionWithClientInfo        = (*sseSession)(nil)
 )
 
 // SSEServer implements a Server-Sent Events (SSE) based MCP server.
@@ -109,8 +192,9 @@ type SSEServer struct {
 	sseEndpoint                  string
 	sessions                     sync.Map
 	srv                          *http.Server
-	contextFunc                  HTTPContextFunc
+	contextFunc                  SSEContextFunc
 	dynamicBasePathFunc          DynamicBasePathFunc
+	sessionIDGenFunc             SessionIDGenFunc
 
 	keepAlive         bool
 	keepAliveInterval time.Duration
@@ -118,41 +202,37 @@ type SSEServer struct {
 	mu sync.RWMutex
 }
 
-// Ensure SSEServer implements httpTransportConfigurable
-var _ httpTransportConfigurable = (*SSEServer)(nil)
+// SSEOption defines a function type for configuring SSEServer
+type SSEOption func(*SSEServer)
 
-func (s *SSEServer) setBasePath(basePath string) {
-	s.basePath = normalizeURLPath(basePath)
-}
-
-func (s *SSEServer) setDynamicBasePath(fn DynamicBasePathFunc) {
-	if fn != nil {
-		s.dynamicBasePathFunc = func(r *http.Request, sid string) string {
-			bp := fn(r, sid)
-			return normalizeURLPath(bp)
+// WithBaseURL sets the base URL for the SSE server
+func WithBaseURL(baseURL string) SSEOption {
+	return func(s *SSEServer) {
+		if baseURL != "" {
+			u, err := url.Parse(baseURL)
+			if err != nil {
+				return
+			}
+			if u.Scheme != "http" && u.Scheme != "https" {
+				return
+			}
+			// Check if the host is empty or only contains a port
+			if u.Host == "" || strings.HasPrefix(u.Host, ":") {
+				return
+			}
+			if len(u.Query()) > 0 {
+				return
+			}
 		}
+		s.baseURL = strings.TrimSuffix(baseURL, "/")
 	}
 }
 
-func (s *SSEServer) setKeepAliveInterval(interval time.Duration) {
-	s.keepAlive = true
-	s.keepAliveInterval = interval
-}
-
-func (s *SSEServer) setKeepAlive(keepAlive bool) {
-	s.keepAlive = keepAlive
-}
-
-func (s *SSEServer) setContextFunc(fn HTTPContextFunc) {
-	s.contextFunc = fn
-}
-
-func (s *SSEServer) setHTTPServer(srv *http.Server) {
-	s.srv = srv
-}
-
-func (s *SSEServer) setBaseURL(baseURL string) {
-	s.baseURL = baseURL
+// WithStaticBasePath adds a new option for setting a static base path
+func WithStaticBasePath(basePath string) SSEOption {
+	return func(s *SSEServer) {
+		s.basePath = normalizeURLPath(basePath)
+	}
 }
 
 // WithBasePath adds a new option for setting a static base path.
@@ -164,11 +244,26 @@ func WithBasePath(basePath string) SSEOption {
 	return WithStaticBasePath(basePath)
 }
 
+// WithDynamicBasePath accepts a function for generating the base path. This is
+// useful for cases where the base path is not known at the time of SSE server
+// creation, such as when using a reverse proxy or when the server is mounted
+// at a dynamic path.
+func WithDynamicBasePath(fn DynamicBasePathFunc) SSEOption {
+	return func(s *SSEServer) {
+		if fn != nil {
+			s.dynamicBasePathFunc = func(r *http.Request, sid string) string {
+				bp := fn(r, sid)
+				return normalizeURLPath(bp)
+			}
+		}
+	}
+}
+
 // WithMessageEndpoint sets the message endpoint path
 func WithMessageEndpoint(endpoint string) SSEOption {
-	return sseOption(func(s *SSEServer) {
+	return func(s *SSEServer) {
 		s.messageEndpoint = endpoint
-	})
+	}
 }
 
 // WithAppendQueryToMessageEndpoint configures the SSE server to append the original request's
@@ -177,37 +272,64 @@ func WithMessageEndpoint(endpoint string) SSEOption {
 // SSE connection request and carry them over to subsequent message requests, maintaining
 // context or authentication details across the communication channel.
 func WithAppendQueryToMessageEndpoint() SSEOption {
-	return sseOption(func(s *SSEServer) {
+	return func(s *SSEServer) {
 		s.appendQueryToMessageEndpoint = true
-	})
+	}
 }
 
 // WithUseFullURLForMessageEndpoint controls whether the SSE server returns a complete URL (including baseURL)
 // or just the path portion for the message endpoint. Set to false when clients will concatenate
 // the baseURL themselves to avoid malformed URLs like "http://localhost/mcphttp://localhost/mcp/message".
 func WithUseFullURLForMessageEndpoint(useFullURLForMessageEndpoint bool) SSEOption {
-	return sseOption(func(s *SSEServer) {
+	return func(s *SSEServer) {
 		s.useFullURLForMessageEndpoint = useFullURLForMessageEndpoint
-	})
+	}
 }
 
 // WithSSEEndpoint sets the SSE endpoint path
 func WithSSEEndpoint(endpoint string) SSEOption {
-	return sseOption(func(s *SSEServer) {
+	return func(s *SSEServer) {
 		s.sseEndpoint = endpoint
-	})
+	}
+}
+
+// WithHTTPServer sets the HTTP server instance.
+// NOTE: When providing a custom HTTP server, you must handle routing yourself
+// If routing is not set up, the server will start but won't handle any MCP requests.
+func WithHTTPServer(srv *http.Server) SSEOption {
+	return func(s *SSEServer) {
+		s.srv = srv
+	}
+}
+
+func WithKeepAliveInterval(keepAliveInterval time.Duration) SSEOption {
+	return func(s *SSEServer) {
+		s.keepAlive = true
+		s.keepAliveInterval = keepAliveInterval
+	}
+}
+
+func WithKeepAlive(keepAlive bool) SSEOption {
+	return func(s *SSEServer) {
+		s.keepAlive = keepAlive
+	}
 }
 
 // WithSSEContextFunc sets a function that will be called to customise the context
 // to the server using the incoming request.
-//
-// Deprecated: Use WithHTTPContextFunc instead. This will be removed in a future version.
-//
-//go:deprecated
 func WithSSEContextFunc(fn SSEContextFunc) SSEOption {
-	return sseOption(func(s *SSEServer) {
-		WithHTTPContextFunc(HTTPContextFunc(fn)).applyToSSE(s)
-	})
+	return func(s *SSEServer) {
+		s.contextFunc = fn
+	}
+}
+
+// WithSessionIDGenerator sets a custom session ID generator. If fn == nil the call is ignored.
+func WithSessionIDGenerator(fn SessionIDGenFunc) SSEOption {
+	return func(s *SSEServer) {
+		if fn != nil {
+			s.sessionIDGenFunc = fn
+		}
+	}
 }
 
 // NewSSEServer creates a new SSE server instance with the given MCP server and options.
@@ -219,19 +341,23 @@ func NewSSEServer(server *MCPServer, opts ...SSEOption) *SSEServer {
 		useFullURLForMessageEndpoint: true,
 		keepAlive:                    false,
 		keepAliveInterval:            10 * time.Second,
+		sessionIDGenFunc: func(ctx context.Context, r *http.Request) (string, error) {
+			return uuid.New().String(), nil
+		},
 	}
 
 	// Apply all options
 	for _, opt := range opts {
-		opt.applyToSSE(s)
+		opt(s)
 	}
 
 	return s
 }
 
-// NewTestServer creates a test server for testing purposes.
+// NewTestServer creates a test server for testing purposes
 func NewTestServer(server *MCPServer, opts ...SSEOption) *httptest.Server {
 	sseServer := NewSSEServer(server, opts...)
+
 	testServer := httptest.NewServer(sseServer)
 	sseServer.baseURL = testServer.URL
 	return testServer
@@ -299,10 +425,17 @@ func (s *SSEServer) handleSSE(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	sessionID := uuid.New().String()
+	sessionID, err := s.sessionIDGenFunc(r.Context(), r)
+	if err != nil {
+		http.Error(w, "Failed to create session ID", http.StatusInternalServerError)
+		return
+	}
+	if sessionID == "" {
+		http.Error(w, "Failed to create session ID", http.StatusInternalServerError)
+		return
+	}
+
 	session := &sseSession{
-		writer:              w,
-		flusher:             flusher,
 		done:                make(chan struct{}),
 		eventQueue:          make(chan string, 100), // Buffer for events
 		sessionID:           sessionID,
@@ -458,7 +591,8 @@ func (s *SSEServer) handleMessage(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 
 	// Create a new context for handling the message that will be canceled when the message handling is done
-	messageCtx, cancel := context.WithCancel(detachedCtx)
+	messageCtx := context.WithValue(detachedCtx, requestHeader, r.Header)
+	messageCtx, cancel := context.WithCancel(messageCtx)
 
 	go func(ctx context.Context) {
 		defer cancel()

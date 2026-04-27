@@ -29,11 +29,7 @@ func setupMCPProject(t *testing.T, files map[string]string) string {
 
 func makeRequest(args map[string]any) mcpsdk.CallToolRequest {
 	return mcpsdk.CallToolRequest{
-		Params: struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments,omitempty"`
-			Meta      *mcpsdk.Meta   `json:"_meta,omitempty"`
-		}{
+		Params: mcpsdk.CallToolParams{
 			Arguments: args,
 		},
 	}
@@ -465,11 +461,7 @@ func TestProgress_WithToken(t *testing.T) {
 	// Verify that newProgress extracts the token from Meta.
 	token := "test-token-123"
 	req := mcpsdk.CallToolRequest{
-		Params: struct {
-			Name      string         `json:"name"`
-			Arguments map[string]any `json:"arguments,omitempty"`
-			Meta      *mcpsdk.Meta   `json:"_meta,omitempty"`
-		}{
+		Params: mcpsdk.CallToolParams{
 			Arguments: map[string]any{"pattern": "$x.Close()"},
 			Meta:      &mcpsdk.Meta{ProgressToken: token},
 		},

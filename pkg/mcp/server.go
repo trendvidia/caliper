@@ -318,7 +318,7 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 	}
 
 	// Apply name constraints if provided.
-	if nc, ok := req.Params.Arguments["name_constraints"]; ok {
+	if nc, ok := req.GetArguments()["name_constraints"]; ok {
 		if ncMap, ok := nc.(map[string]any); ok && len(ncMap) > 0 {
 			nameConst := make(patterns.NameConstraint, len(ncMap))
 			for k, v := range ncMap {
@@ -417,7 +417,7 @@ func (s *Server) handleFindTypeUsage(ctx context.Context, req mcpsdk.CallToolReq
 	// Parse desired usage kinds.
 	wantAll := true
 	wantKinds := make(map[string]bool)
-	if kindsRaw, ok := req.Params.Arguments["usage_kinds"]; ok {
+	if kindsRaw, ok := req.GetArguments()["usage_kinds"]; ok {
 		if kindsSlice, ok := kindsRaw.([]any); ok && len(kindsSlice) > 0 {
 			wantAll = false
 			for _, k := range kindsSlice {
@@ -863,7 +863,7 @@ func (s *Server) handleMigrateAPI(ctx context.Context, req mcpsdk.CallToolReques
 	path = s.defaultPath(path)
 
 	// Parse rules from request.
-	rulesRaw, ok := req.Params.Arguments["rules"]
+	rulesRaw, ok := req.GetArguments()["rules"]
 	if !ok {
 		return errorResult("Missing required parameter: rules"), nil
 	}
@@ -1508,7 +1508,7 @@ func parseQualifiedName(s string) (string, string) {
 // --------------------------------------------------------------------------
 
 func stringParam(req mcpsdk.CallToolRequest, key string) string {
-	v, ok := req.Params.Arguments[key]
+	v, ok := req.GetArguments()[key]
 	if !ok {
 		return ""
 	}
@@ -1520,7 +1520,7 @@ func stringParam(req mcpsdk.CallToolRequest, key string) string {
 }
 
 func boolParam(req mcpsdk.CallToolRequest, key string) bool {
-	v, ok := req.Params.Arguments[key]
+	v, ok := req.GetArguments()[key]
 	if !ok {
 		return false
 	}
@@ -1532,7 +1532,7 @@ func boolParam(req mcpsdk.CallToolRequest, key string) bool {
 }
 
 func boolParamDefault(req mcpsdk.CallToolRequest, key string, def bool) bool {
-	v, ok := req.Params.Arguments[key]
+	v, ok := req.GetArguments()[key]
 	if !ok {
 		return def
 	}
@@ -1576,7 +1576,7 @@ func errorResult(format string, args ...any) *mcpsdk.CallToolResult {
 }
 
 func intParam(req mcpsdk.CallToolRequest, key string) int {
-	v, ok := req.Params.Arguments[key]
+	v, ok := req.GetArguments()[key]
 	if !ok {
 		return 0
 	}
