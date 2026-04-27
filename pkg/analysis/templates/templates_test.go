@@ -351,6 +351,92 @@ func writes() {
 	}
 }
 
+func TestUncheckedError_HashConformanceConcrete(t *testing.T) {
+	// A type that structurally implements hash.Hash inherits the
+	// "Write never returns an error" contract — even if it's a
+	// concrete struct (not an interface value of static type hash.Hash)
+	// and lives outside the stdlib hash package. This covers stdlib's
+	// many concrete digest types (sha256.digest, sha3.state,
+	// crypto/internal/fips140/...) and the user's own digests.
+	src := `package testpkg
+
+type myDigest struct{}
+
+func (myDigest) Write(p []byte) (int, error) { return len(p), nil }
+func (myDigest) Sum(b []byte) []byte         { return b }
+func (myDigest) Reset()                      {}
+func (myDigest) Size() int                   { return 32 }
+func (myDigest) BlockSize() int              { return 64 }
+
+func use() {
+	var d myDigest
+	d.Write([]byte("payload"))
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings for hash-shaped concrete type, got %d: %s", got, findings[0].Message)
+	}
+}
+
+func TestUncheckedError_HashConformancePartialNotMatched(t *testing.T) {
+	// A type that LOOKS like a hash but is missing one method does NOT
+	// inherit the contract — guards against accidental over-recognition
+	// (e.g., io.Writer, bufio.Writer, custom buffered writers all have
+	// Write but not Sum/Reset/Size/BlockSize).
+	src := `package testpkg
+
+type writer struct{}
+
+func (writer) Write(p []byte) (int, error) { return len(p), nil }
+
+func use() {
+	var w writer
+	w.Write([]byte("payload"))
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected unchecked_error finding for plain Write-only type (missing Sum/Reset/Size/BlockSize)")
+	}
+}
+
+func TestUncheckedError_HashConformanceDisabled(t *testing.T) {
+	// Disabling hash.Hash.Write must also disable the structural
+	// inheritance — otherwise the disable is bypassable just by using
+	// a concrete digest type instead of an interface value.
+	src := `package testpkg
+
+type myDigest struct{}
+
+func (myDigest) Write(p []byte) (int, error) { return len(p), nil }
+func (myDigest) Sum(b []byte) []byte         { return b }
+func (myDigest) Reset()                      {}
+func (myDigest) Size() int                   { return 32 }
+func (myDigest) BlockSize() int              { return 64 }
+
+func use() {
+	var d myDigest
+	d.Write([]byte("payload"))
+}
+`
+	engine := setupProject(t, src)
+	ConfigureInfallible(&pb.Infallible{
+		DisableMethods: []string{"hash.Hash.Write"},
+	})
+	t.Cleanup(func() { ConfigureInfallible(nil) })
+
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected finding when hash.Hash.Write is disabled — structural inheritance must respect the disable")
+	}
+}
+
 func TestUncheckedError_HashSubInterfaces(t *testing.T) {
 	// hash.Hash32 and hash.Hash64 embed hash.Hash and inherit the same
 	// "never returns an error" contract. Because the static type of the

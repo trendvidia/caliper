@@ -278,7 +278,8 @@ func isInfallibleMethodCall(selection *types.Selection) bool {
 	if !ok {
 		return false
 	}
-	recvType := selection.Recv()
+	origRecvType := selection.Recv()
+	recvType := origRecvType
 	if ptr, ok := recvType.(*types.Pointer); ok {
 		recvType = ptr.Elem()
 	}
@@ -294,7 +295,87 @@ func isInfallibleMethodCall(selection *types.Selection) bool {
 	if infallibleStdlibMethods[key] && !disabledStdlibMethods.Match(key) {
 		return true
 	}
-	return userInfallibleMethods.Match(key)
+	if userInfallibleMethods.Match(key) {
+		return true
+	}
+	// Fall back: when a concrete type implements hash.Hash structurally,
+	// inherit the "Write never returns an error" contract. The stdlib
+	// has many concrete digest types (sha256.digest, sha3.state, the
+	// FIPS-internal hashes, etc.) that the static type-name keying
+	// otherwise misses. Gated on hash.Hash.Write not being explicitly
+	// disabled by the user, so disabling propagates to the inheritance.
+	if fn.Name() == "Write" && !disabledStdlibMethods.Match("hash.Hash.Write") &&
+		implementsHashHash(origRecvType) {
+		return true
+	}
+	return false
+}
+
+// implementsHashHash reports whether t structurally has the method set
+// of hash.Hash: Write([]byte) (int, error), Sum([]byte) []byte, Reset(),
+// Size() int, BlockSize() int. Any type satisfying this method set is
+// treated as a hash implementation regardless of declared interface
+// relationships — we don't need to look up the actual hash.Hash
+// interface in the type universe.
+func implementsHashHash(t types.Type) bool {
+	if t == nil {
+		return false
+	}
+	checks := []struct {
+		name    string
+		params  []string
+		results []string
+	}{
+		{"Write", []string{"[]byte"}, []string{"int", "error"}},
+		{"Sum", []string{"[]byte"}, []string{"[]byte"}},
+		{"Reset", nil, nil},
+		{"Size", nil, []string{"int"}},
+		{"BlockSize", nil, []string{"int"}},
+	}
+	for _, c := range checks {
+		if !hasMethodSig(t, c.name, c.params, c.results) {
+			return false
+		}
+	}
+	return true
+}
+
+func hasMethodSig(t types.Type, name string, params, results []string) bool {
+	ms := types.NewMethodSet(t)
+	for i := 0; i < ms.Len(); i++ {
+		sel := ms.At(i)
+		if sel.Obj().Name() != name {
+			continue
+		}
+		sig, ok := sel.Obj().Type().(*types.Signature)
+		if !ok {
+			continue
+		}
+		if signatureMatches(sig, params, results) {
+			return true
+		}
+	}
+	return false
+}
+
+func signatureMatches(sig *types.Signature, params, results []string) bool {
+	if sig.Params().Len() != len(params) {
+		return false
+	}
+	if sig.Results().Len() != len(results) {
+		return false
+	}
+	for i, want := range params {
+		if sig.Params().At(i).Type().String() != want {
+			return false
+		}
+	}
+	for i, want := range results {
+		if sig.Results().At(i).Type().String() != want {
+			return false
+		}
+	}
+	return true
 }
 
 // isInfallibleFuncCall checks whether a non-method call targets an
