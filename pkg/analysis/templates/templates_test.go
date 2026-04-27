@@ -799,6 +799,63 @@ func read() error {
 	}
 }
 
+func TestUncheckedError_CloseInsideCloseMethod(t *testing.T) {
+	// Pattern (os/root_openat.go:35 in stdlib): a Close-named method
+	// calls another Close to finalize a subordinate resource. The
+	// subordinate close's discarded error is intentional.
+	src := `package testpkg
+
+type inner struct{}
+
+func (inner) Close() error { return nil }
+
+type outer struct {
+	i inner
+}
+
+func (o *outer) Close() error {
+	o.i.Close()  // cleanup-shaped call inside a cleanup-named method
+	return nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close inside Close method), got %d: %s", got, findings[0].Message)
+	}
+}
+
+func TestUncheckedError_CloseSandwichedByErrCheck(t *testing.T) {
+	// Pattern (very common in stdlib): _, err := Op(); X.Close(); if
+	// err != nil { return err }. Close is positioned between the
+	// err-bearing call and the err check; the discarded close error is
+	// intentional cleanup.
+	src := `package testpkg
+
+import "os"
+
+func readNames(name string) ([]string, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	names, err := f.Readdirnames(-1)
+	f.Close()  // sandwiched: should NOT fire
+	if err != nil {
+		return nil, err
+	}
+	return names, nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close sandwiched by err-assign + err-check), got %d: %s", got, findings[0].Message)
+	}
+}
+
 func TestUncheckedError_NonCleanupCallInErrBranchStillFires(t *testing.T) {
 	// Method-name filter: only Close-family calls get the cleanup-path
 	// pass. A plain error-returning method discarded inside an if-err

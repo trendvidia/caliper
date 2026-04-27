@@ -129,12 +129,21 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 		return nil
 	}
 
-	// Cleanup-path suppression: a Close-family call inside an
-	// `if err != nil { ... }` body is conventional best-effort
-	// cleanup. The original error is what the caller will see; the
-	// cleanup's own error is intentionally dropped.
-	if isCleanupShapedCall(call) && inErrorCleanupBlock(ctx.Func.Func.Body, expr.Pos()) {
-		return nil
+	// Cleanup-path suppression: a Close-family call is intentional
+	// best-effort when any of these shapes hold:
+	//   - inside an `if err != nil { ... }` body (the user already
+	//     errored; the cleanup's error is dropped on purpose)
+	//   - inside a function whose name is itself a cleanup shape
+	//     (Close()/Stop()/Cancel()/etc. methods that finalize subordinate
+	//     resources by calling their Close)
+	//   - sandwiched between an err-bearing assignment and an err-check
+	//     of the same variable: `_, err := X; r.Close(); if err != nil {...}`
+	if isCleanupShapedCall(call) {
+		if inErrorCleanupBlock(ctx.Func.Func.Body, expr.Pos()) ||
+			inCleanupFunction(ctx.Func.Func) ||
+			bracketedByErrCheck(ctx.Func.Func.Body, expr.Pos()) {
+			return nil
+		}
 	}
 
 	return &Finding{
@@ -203,6 +212,89 @@ func isCleanupShapedCall(call *ast.CallExpr) bool {
 		return cleanupMethodNames[fn.Name]
 	}
 	return false
+}
+
+// inCleanupFunction reports whether the enclosing function's own name
+// is in the cleanup-method set. Closes inside a Close (or Stop, etc.)
+// method are finalizing subordinate resources — their discarded errors
+// are intentional.
+func inCleanupFunction(fn *ast.FuncDecl) bool {
+	if fn == nil || fn.Name == nil {
+		return false
+	}
+	return cleanupMethodNames[fn.Name.Name]
+}
+
+// bracketedByErrCheck reports whether the call at pos is sandwiched
+// between an err-bearing assignment and a same-variable err-check in
+// the same block:
+//
+//	names, err := f.Readdirnames(-1)
+//	f.Close()                 // ← suppressed
+//	if err != nil { return err }
+//
+// Both the preceding statement and the following statement must be
+// present and shaped as expected; otherwise no suppression.
+func bracketedByErrCheck(funcBody *ast.BlockStmt, pos token.Pos) bool {
+	block := findInnermostBlock(funcBody, pos)
+	if block == nil {
+		return false
+	}
+	idx := -1
+	for i, stmt := range block.List {
+		if stmt.Pos() <= pos && pos <= stmt.End() {
+			idx = i
+			break
+		}
+	}
+	if idx <= 0 || idx >= len(block.List)-1 {
+		return false
+	}
+
+	errName := errAssignedBy(block.List[idx-1])
+	if errName == "" {
+		return false
+	}
+	return ifChecksErrName(block.List[idx+1], errName)
+}
+
+// errAssignedBy returns the err-shaped LHS name of an assignment
+// statement, or "" if the statement isn't an err-bearing assignment.
+// Recognizes both `:=` and `=` forms.
+func errAssignedBy(stmt ast.Stmt) string {
+	assign, ok := stmt.(*ast.AssignStmt)
+	if !ok {
+		return ""
+	}
+	for _, lhs := range assign.Lhs {
+		if id, ok := lhs.(*ast.Ident); ok && looksLikeErrIdent(id) {
+			return id.Name
+		}
+	}
+	return ""
+}
+
+// ifChecksErrName reports whether stmt is `if <name> != nil { ... }` or
+// any condition recognized by isErrCheckCond that references the given
+// err name.
+func ifChecksErrName(stmt ast.Stmt, name string) bool {
+	ifs, ok := stmt.(*ast.IfStmt)
+	if !ok {
+		return false
+	}
+	if !isErrCheckCond(ifs.Cond) {
+		return false
+	}
+	// Confirm the condition references the same err name we saw.
+	found := false
+	ast.Inspect(ifs.Cond, func(n ast.Node) bool {
+		if id, ok := n.(*ast.Ident); ok && id.Name == name {
+			found = true
+			return false
+		}
+		return !found
+	})
+	return found
 }
 
 // inErrorCleanupBlock reports whether pos lies inside the body of an
