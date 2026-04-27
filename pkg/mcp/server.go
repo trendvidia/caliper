@@ -163,6 +163,12 @@ func (s *Server) cachedHandler(toolName string, fn mcpserver.ToolHandlerFunc) mc
 		}
 
 		if cached := s.results.Get(key); cached != nil {
+			// Emit a single progress notification so clients that
+			// watch progress tokens see the call complete instantly
+			// rather than appearing to hang.
+			if prog := newProgress(ctx, req); prog.active() {
+				prog.send(1, 1, "served from cache")
+			}
 			return cached, nil
 		}
 
