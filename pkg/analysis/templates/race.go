@@ -545,21 +545,35 @@ func stmtHasUnlockCall(stmt ast.Stmt) bool {
 	return found
 }
 
-// lookupIdent finds the types.Object for a variable name in the function scope.
+// lookupIdent finds the types.Object for a variable name in the function
+// scope. The first call against a TemplateContext builds a name → *types.Var
+// map over Func.Info.Defs (one O(n) pass); subsequent calls are O(1).
+//
+// Without memoization this was a hot path: race.go and slicerace.go call
+// lookupIdent for every free variable in every goroutine closure, and
+// types.Info.Defs is package-wide (potentially thousands of entries on a
+// large project).
 func lookupIdent(ctx *TemplateContext, name string) types.Object {
 	if ctx.Func.Info == nil || ctx.Func.Info.Defs == nil {
 		return nil
 	}
-
-	// Search Defs for the variable.
-	for ident, obj := range ctx.Func.Info.Defs {
-		if ident.Name == name && obj != nil {
-			if _, ok := obj.(*types.Var); ok {
-				return obj
+	if ctx.defsByName == nil {
+		ctx.defsByName = make(map[string]types.Object)
+		for ident, obj := range ctx.Func.Info.Defs {
+			if obj == nil {
+				continue
+			}
+			if _, ok := obj.(*types.Var); !ok {
+				continue
+			}
+			// First-write-wins to mirror the previous behavior of
+			// returning on first match in map iteration order.
+			if _, seen := ctx.defsByName[ident.Name]; !seen {
+				ctx.defsByName[ident.Name] = obj
 			}
 		}
 	}
-	return nil
+	return ctx.defsByName[name]
 }
 
 // isMapType checks if a type is a map type.

@@ -9,6 +9,7 @@ package templates
 import (
 	"fmt"
 	"go/token"
+	"go/types"
 	"runtime"
 	"strings"
 	"sync"
@@ -47,6 +48,12 @@ type TemplateContext struct {
 	Fset       *token.FileSet
 	IPC        *analysis.InterProceduralContext // optional, nil for intra-procedural
 	Infallible *InfallibleState                 // project-local infallibility config; nil = none
+
+	// defsByName memoizes a name → *types.Var lookup over Func.Info.Defs.
+	// Built lazily on first lookupIdent call so templates that don't use
+	// it (the majority) don't pay for it. Populated/read only by helpers
+	// running within a single TemplateContext, which is single-goroutine.
+	defsByName map[string]types.Object
 }
 
 // BuildContext creates a TemplateContext for a function.
