@@ -1649,7 +1649,7 @@ func suppressed() {
 }
 `
 	engine := setupProject(t, src)
-	tmpl := &ErrorSwallow{}
+	tmpl := &UncheckedError{Strict: true, KindName: "error_swallow"}
 	findings := RunTemplate(engine, tmpl)
 	errs := findingsOfKind(findings, "error_swallow")
 	if len(errs) > 0 {
@@ -1667,7 +1667,7 @@ func notSuppressed() {
 }
 `
 	engine := setupProject(t, src)
-	tmpl := &ErrorSwallow{}
+	tmpl := &UncheckedError{Strict: true, KindName: "error_swallow"}
 	findings := RunTemplate(engine, tmpl)
 	errs := findingsOfKind(findings, "error_swallow")
 	if len(errs) == 0 {
@@ -1871,7 +1871,7 @@ func swallower() {
 }
 `
 	engine := setupProject(t, src)
-	tmpl := &ErrorSwallow{}
+	tmpl := &UncheckedError{Strict: true, KindName: "error_swallow"}
 	findings := RunTemplate(engine, tmpl)
 	errs := findingsOfKind(findings, "error_swallow")
 	if len(errs) == 0 {
@@ -1882,19 +1882,24 @@ func swallower() {
 func TestErrorSwallow_HandledError(t *testing.T) {
 	src := `package testpkg
 
-import "os"
+import (
+	"fmt"
+	"os"
+)
 
 func handler() error {
 	f, err := os.Open("file.txt")
 	if err != nil {
 		return err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("closing: %w", err)
+	}
 	return nil
 }
 `
 	engine := setupProject(t, src)
-	tmpl := &ErrorSwallow{}
+	tmpl := &UncheckedError{Strict: true, KindName: "error_swallow"}
 	findings := RunTemplate(engine, tmpl)
 	errs := findingsOfKind(findings, "error_swallow")
 	if len(errs) > 0 {
@@ -1914,7 +1919,7 @@ func dropper() {
 `
 	engine := setupProject(t, src)
 	// With IncludeDropped, f.Close() should be flagged.
-	tmpl := &ErrorSwallow{IncludeDropped: true}
+	tmpl := &UncheckedError{Strict: true, KindName: "error_swallow", IncludeDefers: true}
 	findings := RunTemplate(engine, tmpl)
 	// Should find both: the _ in os.Open AND the dropped f.Close()
 	errs := findingsOfKind(findings, "error_swallow")

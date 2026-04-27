@@ -21,9 +21,47 @@ type UncheckedError struct {
 	FuncPattern     string // optional: only check specific calls
 	IncludeDefers   bool
 	IncludeExplicit bool // include explicit _ = fn() assignments
+
+	// Strict makes the check behave like the previous ErrorSwallow
+	// template: blank-id discards (`_ = fn()`, `_, _ := fn()`) and
+	// bare-call discards (`fn()` returning error) are flagged by
+	// default, regardless of IncludeExplicit/IncludeDefers. When the
+	// surviving value of a multi-return assign is used downstream,
+	// severity is bumped to "error" because the dropped error
+	// indicates a possible nil-deref risk.
+	Strict bool
+
+	// KindName is the string used for the `kind` field on Findings.
+	// Defaults to "unchecked_error". The find_error_swallow MCP tool
+	// sets this to "error_swallow" so its findings remain
+	// distinguishable for clients that route by kind.
+	KindName string
 }
 
-func (ue *UncheckedError) Name() string { return "unchecked_error" }
+func (ue *UncheckedError) Name() string {
+	if ue.KindName != "" {
+		return ue.KindName
+	}
+	return "unchecked_error"
+}
+
+// kind returns the Finding.Kind value for this template, mirroring Name.
+func (ue *UncheckedError) kind() string {
+	return ue.Name()
+}
+
+// includeExplicit reports whether explicit blank-id discards should be
+// flagged. Strict mode forces this on.
+func (ue *UncheckedError) includeExplicit() bool {
+	return ue.IncludeExplicit || ue.Strict
+}
+
+// includeDefers reports whether deferred discards should be flagged.
+// Strict mode does NOT force this on — deferred Close/Stop is so common
+// and so often intentional that strict-mode opt-in stays explicit.
+func (ue *UncheckedError) includeDefers() bool {
+	return ue.IncludeDefers
+}
 
 func (ue *UncheckedError) Analyze(ctx *TemplateContext) []Finding {
 	var findings []Finding
@@ -47,7 +85,7 @@ func (ue *UncheckedError) checkNode(ctx *TemplateContext, block *cfg.Block, node
 	case *ast.ExprStmt:
 		return ue.checkExprStmt(ctx, block, n)
 	case *ast.DeferStmt:
-		if !ue.IncludeDefers {
+		if !ue.includeDefers() {
 			return nil
 		}
 		return ue.checkDeferStmt(ctx, block, n)
@@ -94,12 +132,20 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 		if i < results.Len() {
 			retType := results.At(i).Type()
 			if isError(retType) {
-				if !ue.IncludeExplicit {
+				if !ue.includeExplicit() {
 					return nil
 				}
+				severity := "warning"
+				// In strict mode, escalate to "error" when the
+				// surviving non-blank value of a multi-return is
+				// used downstream — a dropped error here often
+				// signals a nil-deref risk on that value.
+				if ue.Strict && surviveValueUsedAfter(ctx, assign, i) {
+					severity = "error"
+				}
 				return &Finding{
-					Kind:     "unchecked_error",
-					Severity: "warning",
+					Kind:     ue.kind(),
+					Severity: severity,
 					Message: fmt.Sprintf(
 						"error from %s explicitly ignored with blank identifier",
 						formatCall(call),
@@ -113,6 +159,27 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 	}
 
 	return nil
+}
+
+// surviveValueUsedAfter reports whether any non-blank LHS of assign
+// (other than the blank at errIdx) is referenced by a later statement
+// in the same enclosing block. Used to escalate severity in Strict mode:
+// `f, _ := os.Open(p); f.Read(...)` — the dropped open error means f may
+// be nil and the subsequent .Read could panic.
+func surviveValueUsedAfter(ctx *TemplateContext, assign *ast.AssignStmt, errIdx int) bool {
+	for j, lhs := range assign.Lhs {
+		if j == errIdx {
+			continue
+		}
+		ident, ok := lhs.(*ast.Ident)
+		if !ok || ident.Name == "_" {
+			continue
+		}
+		if valueUsedAfterAssign(ctx, assign, ident.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr *ast.ExprStmt) *Finding {
@@ -148,7 +215,7 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 	}
 
 	return &Finding{
-		Kind:     "unchecked_error",
+		Kind:     ue.kind(),
 		Severity: "error",
 		Message: fmt.Sprintf(
 			"error from %s silently discarded",
@@ -166,7 +233,7 @@ func (ue *UncheckedError) checkDeferStmt(ctx *TemplateContext, _ *cfg.Block, d *
 	}
 
 	return &Finding{
-		Kind:     "unchecked_error",
+		Kind:     ue.kind(),
 		Severity: "info",
 		Message: fmt.Sprintf(
 			"error from deferred %s not checked",
@@ -176,6 +243,69 @@ func (ue *UncheckedError) checkDeferStmt(ctx *TemplateContext, _ *cfg.Block, d *
 		Explanation: "Error from a deferred call is not captured. This is common for Close() but may hide issues.",
 		Suggestion:  "Consider using a named return and closing in a defer with error checking.",
 	}
+}
+
+// --------------------------------------------------------------------------
+// Value-use escalation (Strict mode)
+// --------------------------------------------------------------------------
+
+// valueUsedAfterAssign reports whether varName is referenced by any
+// statement that comes after assign in the same enclosing block (or
+// any nested block within those subsequent statements).
+//
+// Used to escalate severity in strict mode: when a multi-return
+// assignment drops the error, but the surviving value is used
+// downstream, the dropped error often masks a nil-deref risk.
+func valueUsedAfterAssign(ctx *TemplateContext, assign *ast.AssignStmt, varName string) bool {
+	body := ctx.Func.Func.Body
+	if body == nil {
+		return false
+	}
+	return anySubsequentStmtUsesVar(body.List, assign, varName)
+}
+
+// anySubsequentStmtUsesVar walks stmts looking for `assign`, then for
+// any later statement (or sub-statement) that references varName.
+func anySubsequentStmtUsesVar(stmts []ast.Stmt, target *ast.AssignStmt, varName string) bool {
+	found := false
+	for _, stmt := range stmts {
+		if found {
+			if stmtReferencesVar(stmt, varName) {
+				return true
+			}
+			continue
+		}
+		if stmt.Pos() == target.Pos() {
+			found = true
+			continue
+		}
+		switch s := stmt.(type) {
+		case *ast.BlockStmt:
+			if anySubsequentStmtUsesVar(s.List, target, varName) {
+				return true
+			}
+		case *ast.IfStmt:
+			if s.Body != nil && anySubsequentStmtUsesVar(s.Body.List, target, varName) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// stmtReferencesVar reports whether varName appears anywhere in stmt.
+func stmtReferencesVar(stmt ast.Stmt, varName string) bool {
+	found := false
+	ast.Inspect(stmt, func(n ast.Node) bool {
+		if found {
+			return false
+		}
+		if ident, ok := n.(*ast.Ident); ok && ident.Name == varName {
+			found = true
+		}
+		return !found
+	})
+	return found
 }
 
 // --------------------------------------------------------------------------

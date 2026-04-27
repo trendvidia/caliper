@@ -918,21 +918,29 @@ var findErrorSwallowTool = mcpsdk.Tool{
 	Name: "find_error_swallow",
 	Description: `Find explicitly discarded or silently dropped error return values.
 
+This is the strict variant of find_unchecked_error: blank-id discards
+are flagged by default, and severity is escalated to "error" when the
+surviving non-blank value of a multi-return is used downstream
+(dropped error there often masks a nil-deref risk).
+
+Same infallibility allowlist and cleanup-path detector as
+find_unchecked_error apply — known-safe patterns (bytes.Buffer.Write,
+hash.Hash.Write, Close inside if-err blocks, etc.) won't fire.
+
 WHAT IT CATCHES:
   - _ = f()              — explicit discard of error return
-  - f, _ := os.Open(p)   — discarded error in multi-return assignment
+  - f, _ := os.Open(p)   — discarded error in multi-return; severity
+                           escalates to "error" when f is used later
   - _, _ := f()          — both returns discarded
 
 OPTIONAL (with include_dropped=true):
-  - f.Close()            — error return silently dropped (common, often intentional)
-
-WHY THIS MATTERS:
-  Discarded errors hide failures. A file that fails to open, a connection
-  that fails to close, or a write that silently fails can cause data loss
-  or subtle bugs that are very hard to diagnose.
+  - f.Close() in defer   — deferred error-returning call (commonly
+                           intentional but sometimes hides issues)
 
 USE THIS TOOL WHEN: auditing error handling, reviewing new code, or
-enforcing "no ignored errors" policies.`,
+enforcing "no ignored errors" policies.
+
+Respects .caliper.pxf walking up from the analysis path.`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{

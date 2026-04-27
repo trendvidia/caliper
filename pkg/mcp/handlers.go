@@ -1143,7 +1143,7 @@ func (s *Server) templateForKind(kind string) templates.Template {
 	case "defer_in_loop":
 		return &templates.DeferInLoop{}
 	case "error_swallow":
-		return &templates.ErrorSwallow{}
+		return &templates.UncheckedError{Strict: true, KindName: "error_swallow"}
 	case "slice_append_race":
 		return &templates.SliceAppendRace{}
 	case "sql_injection":
@@ -1193,8 +1193,14 @@ func (s *Server) handleFindErrorSwallow(ctx context.Context, req mcpsdk.CallTool
 	}
 	defer release()
 
-	tmpl := &templates.ErrorSwallow{
-		IncludeDropped: boolParam(req, "include_dropped"),
+	// find_error_swallow is now an alias for find_unchecked_error in
+	// strict mode (blank-id discards always flagged + value-use
+	// severity escalation), with the kind renamed back to
+	// "error_swallow" so clients that route by kind still work.
+	tmpl := &templates.UncheckedError{
+		Strict:        true,
+		KindName:      "error_swallow",
+		IncludeDefers: boolParam(req, "include_dropped"),
 	}
 	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings, req), nil
