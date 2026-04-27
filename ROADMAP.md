@@ -93,6 +93,105 @@
 - [x] Claude Code MCP config snippet (`claude_desktop_config.json` example)
 - [ ] VS Code extension that runs Caliper as an MCP server
 
+## Operational Quality
+
+Items surfaced during dogfooding (running caliper against caliper, then
+against `clair`, `appviewer`, and the trendvidia/go stdlib fork). These
+are smaller than a phase but high-leverage — most affect either daily UX
+or signal-to-noise of existing checks.
+
+### Engine cache persistence across MCP reconnects
+
+Claude Code's MCP transport closes stdin after each tool batch, so caliper
+exits cleanly and is re-spawned on the next batch. Every batch therefore
+pays the full cold `packages.Load` cost (multi-second on a stdlib-sized
+project). The session log diagnostic confirmed this — every "disconnect"
+is `caliper: stdin EOF after Xs (N reads, M bytes)`, never a crash.
+
+- [ ] Persist parsed package data to `$TMPDIR/caliper-cache/<sha-of-absPath>/`
+  on shutdown
+- [ ] Lazy rehydration on first tool call against a cached path
+- [ ] Invalidate by go.mod / source-file mtime (cheap stat)
+- [ ] Open question: can `*types.Package` + `*ast.File` round-trip through
+  a serialization that's faster than re-parsing? (gob doesn't handle them
+  out of the box; may need a purpose-built format.)
+
+Biggest UX win if achievable. Significant lift — roughly a phase-sized
+project on its own.
+
+### Consolidate `find_unchecked_error` and `find_error_swallow`
+
+The two checks fire on substantially overlapping patterns with different
+wording, so users see the same hit reported twice with different `kind`
+values. Sweeps on stdlib showed >50% overlap.
+
+- [ ] Audit which patterns each check uniquely catches
+- [ ] Merge into one check with a `mode` parameter (`strict`/`lenient`),
+  OR have one explicitly defer to the other (e.g. `error_swallow` skips
+  any finding `unchecked_error` would also raise)
+- [ ] Update tool descriptions and the Phase-1 docs to reflect the
+  consolidated tool
+
+### Per-project `.caliper.pxf` discoverability
+
+The per-analysis-path config resolution shipped this session, but the
+MCP tool descriptions (returned via the protocol) don't mention it.
+LLMs and human callers have no signal that dropping a `.caliper.pxf`
+near their project changes behavior.
+
+- [ ] Add "respects `.caliper.pxf` walking up from the analysis path" to
+  the descriptions of `find_unchecked_error`, `find_resource_leak`, and
+  any other check that consults the config
+- [ ] Mirror the same line in `docs/getting-started.md`'s "Project
+  Configuration" section
+- [ ] Consider an `mcp__caliper__describe_config` tool that reports which
+  `.caliper.pxf` (if any) was applied for a given path — helps debug
+  "why is this finding still firing"
+
+### Targeted `fmt.State` Format-method recognizer
+
+Largest remaining noise source on stdlib (~117 `fmt.Fprintf` hits). Most
+fire inside `func (T) Format(s fmt.State, c rune)` methods writing to
+`s` — the writer is `fmt.State`, an interface, but in practice always
+backed by an internal buffer when called by the `fmt` package. Pattern-
+match the enclosing function shape rather than do full writer-flow.
+
+- [ ] Recognizer: when the call is inside a method matching
+  `Format(_ fmt.State, _ rune)` AND the writer arg is the fmt.State
+  parameter, suppress
+- [ ] Regression test: a `Format` method that takes errors-mattering
+  writes still fires
+- [ ] Cost: ~30 lines, no flow analysis required
+
+### Pre-existing analyzer gaps surfaced this session
+
+Two narrow bugs found while writing tests for unrelated features:
+
+- [ ] `find_race_condition` doesn't recognize `count++` /
+  `*ast.IncDecStmt` as a write — only `*ast.AssignStmt` is checked.
+  Misses races on counter-style mutations.
+- [ ] `find_unchecked_error` / `bracketedByErrCheck` only sees uses
+  in the same lexical block as the call — ignores uses outside the
+  enclosing for/switch. Limits the "save err, do thing, check err"
+  recognizer.
+
+Both are local fixes (≤20 lines each) but defensive — small payoff
+individually, easy to do as a cleanup pass.
+
+### CHANGELOG / release notes
+
+Caliper's behavior has shifted substantially across recent commits
+(Go 1.22+ loop scoping, hash conformance, cleanup-path detection,
+engine-scoped config, mcp-go fork). Users updating the binary have no
+signal about what changed.
+
+- [ ] `CHANGELOG.md` at repo root — entries grouped by user-visible
+  category (analyzer behavior changes, config schema, transport,
+  internal)
+- [ ] Update on each release that touches user-observable behavior
+- [ ] Eventually: tie to git tags so `caliper --version` can print
+  the relevant changelog entry
+
 ## Phase 6 — Coccinelle Parity
 
 The features below close the remaining gap between Caliper and what Coccinelle provides for C/Linux kernel refactoring. They transform Caliper from a pattern-finder into a full semantic patch engine for Go.
