@@ -47,9 +47,18 @@ jobs:
         uses: actions/setup-go@v6
         with:
           go-version: 'stable'
-          cache: true
+          # Disable setup-go's cache here. The lint job doesn't run
+          # `go test` or `go build`, so the module cache is never
+          # populated; setup-go's post-step warns about missing paths.
+          # golangci-lint manages its own cache via the action below.
+          cache: false
 
       - uses: golangci/golangci-lint-action@v8
         with:
-          version: latest
+          # Pin to v2.x — the action's "latest" otherwise resolves to a
+          # v1.x release built with an older Go and chokes on go.mod's
+          # 1.26 directive ("Go language version used to build
+          # golangci-lint is lower than the targeted Go version"). v2
+          # uses the same .golangci.yml schema this repo ships.
+          version: v2.10.1
           args: --timeout=5m
