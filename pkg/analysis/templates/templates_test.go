@@ -957,6 +957,38 @@ func readNames(name string) ([]string, error) {
 	}
 }
 
+func TestUncheckedError_CloseSandwichedAcrossNestedBlock(t *testing.T) {
+	// The bracketing assignment + err-check live in the function body,
+	// but the Close sits inside a nested block (e.g., a guarded branch
+	// or a for-loop). bracketedByErrCheck must walk outward through
+	// enclosing blocks rather than only inspecting the innermost.
+	src := `package testpkg
+
+import "os"
+
+func read(name string) (int, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return 0, err
+	}
+	n, err := f.Read(make([]byte, 1024))
+	if name != "" {
+		f.Close() // ← inside nested if; outer-block bracketing applies
+	}
+	if err != nil {
+		return 0, err
+	}
+	return n, nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close in nested block, outer-block-bracketed), got %d: %s", got, findings[0].Message)
+	}
+}
+
 func TestUncheckedError_NonCleanupCallInErrBranchStillFires(t *testing.T) {
 	// Method-name filter: only Close-family calls get the cleanup-path
 	// pass. A plain error-returning method discarded inside an if-err

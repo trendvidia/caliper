@@ -506,36 +506,79 @@ func cfgDominates(g *cfg.Graph, dominator, target *cfg.Block) bool {
 }
 
 // bracketedByErrCheck reports whether the call at pos is sandwiched
-// between an err-bearing assignment and a same-variable err-check in
-// the same block:
+// between an err-bearing assignment and a same-variable err-check.
+//
+// Walks the chain of enclosing blocks from innermost to outermost so
+// the recognizer fires whether the bracketing siblings are right next
+// to the call:
 //
 //	names, err := f.Readdirnames(-1)
-//	f.Close()                 // ← suppressed
+//	f.Close()                  // ← suppressed: same enclosing block
 //	if err != nil { return err }
 //
-// Both the preceding statement and the following statement must be
-// present and shaped as expected; otherwise no suppression.
+// or split across nesting levels:
+//
+//	names, err := f.Readdirnames(-1)
+//	if cond {
+//	    f.Close()              // ← suppressed: outer block brackets
+//	}
+//	if err != nil { return err }
+//
+// At each enclosing block, finds the statement containing (or
+// nested-containing) pos, then checks whether its previous sibling is
+// an err-bearing assignment and its next sibling is an err-check
+// against that same name. As soon as one level matches, we return.
 func bracketedByErrCheck(funcBody *ast.BlockStmt, pos token.Pos) bool {
-	block := findInnermostBlock(funcBody, pos)
-	if block == nil {
-		return false
-	}
-	idx := -1
-	for i, stmt := range block.List {
-		if stmt.Pos() <= pos && pos <= stmt.End() {
-			idx = i
-			break
+	for _, pair := range enclosingBlocksAndIndex(funcBody, pos) {
+		block, idx := pair.block, pair.idx
+		if idx <= 0 || idx >= len(block.List)-1 {
+			continue
+		}
+		errName := errAssignedBy(block.List[idx-1])
+		if errName == "" {
+			continue
+		}
+		if ifChecksErrName(block.List[idx+1], errName) {
+			return true
 		}
 	}
-	if idx <= 0 || idx >= len(block.List)-1 {
-		return false
-	}
+	return false
+}
 
-	errName := errAssignedBy(block.List[idx-1])
-	if errName == "" {
-		return false
+// blockIdx pairs a block with the index of one of its top-level
+// statements that lexically contains a target position.
+type blockIdx struct {
+	block *ast.BlockStmt
+	idx   int
+}
+
+// enclosingBlocksAndIndex returns every BlockStmt under root that has
+// a top-level statement lexically containing pos, paired with that
+// statement's index. Ordered innermost-first.
+func enclosingBlocksAndIndex(root ast.Node, pos token.Pos) []blockIdx {
+	var hits []blockIdx
+	ast.Inspect(root, func(n ast.Node) bool {
+		block, ok := n.(*ast.BlockStmt)
+		if !ok {
+			return true
+		}
+		if !(block.Pos() <= pos && pos <= block.End()) {
+			return true
+		}
+		for i, stmt := range block.List {
+			if stmt.Pos() <= pos && pos <= stmt.End() {
+				hits = append(hits, blockIdx{block: block, idx: i})
+				break
+			}
+		}
+		return true
+	})
+	// ast.Inspect is pre-order so outermost-first; reverse to put
+	// innermost-first (more specific match wins).
+	for i, j := 0, len(hits)-1; i < j; i, j = i+1, j-1 {
+		hits[i], hits[j] = hits[j], hits[i]
 	}
-	return ifChecksErrName(block.List[idx+1], errName)
+	return hits
 }
 
 // errAssignedBy returns the err-shaped LHS name of an assignment
