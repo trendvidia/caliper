@@ -770,6 +770,80 @@ func TestUncheckedError_ConfigBadGlobDiagnostic(t *testing.T) {
 	}
 }
 
+func TestUncheckedError_CleanupPathClose(t *testing.T) {
+	// Close()/closeBody()/Stop()-style discards inside an
+	// `if err != nil { ... }` cleanup branch are conventional and
+	// shouldn't be flagged. The original error is what the caller will
+	// see; the cleanup's own error is intentionally dropped.
+	src := `package testpkg
+
+import "os"
+
+func read() error {
+	f, err := os.Open("x")
+	if err != nil {
+		return err
+	}
+	if _, err := f.Read(make([]byte, 1)); err != nil {
+		f.Close()  // cleanup-path: must NOT be flagged
+		return err
+	}
+	return f.Close()  // happy-path: handled
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close in if-err cleanup branch), got %d: %s", got, findings[0].Message)
+	}
+}
+
+func TestUncheckedError_NonCleanupCallInErrBranchStillFires(t *testing.T) {
+	// Method-name filter: only Close-family calls get the cleanup-path
+	// pass. A plain error-returning method discarded inside an if-err
+	// block is still likely a real bug.
+	src := `package testpkg
+
+type T struct{}
+
+func (T) DoWork() error { return nil }
+
+func use(err error) {
+	var t T
+	if err != nil {
+		t.DoWork()  // not a cleanup shape — should fire
+	}
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected unchecked_error finding for non-cleanup method call inside if-err branch")
+	}
+}
+
+func TestUncheckedError_CloseOutsideErrBranchStillFires(t *testing.T) {
+	// Sanity guard: Close() in normal flow (not in a cleanup branch)
+	// must still be flagged so we don't lose real findings.
+	src := `package testpkg
+
+import "os"
+
+func bad() {
+	f, _ := os.Open("test.txt")
+	f.Close()  // not in any if-err branch — must fire
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected unchecked_error finding for Close() outside any cleanup branch")
+	}
+}
+
 func TestUncheckedError_ConcurrentDifferentConfigs(t *testing.T) {
 	// Two analyses on distinct projects with distinct InfallibleStates
 	// must not see each other's allowlist. This is the regression
