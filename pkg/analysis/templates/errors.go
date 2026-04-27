@@ -131,15 +131,16 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 
 	// Cleanup-path suppression: a Close-family call is intentional
 	// best-effort when any of these shapes hold:
-	//   - inside an `if err != nil { ... }` body (the user already
-	//     errored; the cleanup's error is dropped on purpose)
-	//   - inside a function whose name is itself a cleanup shape
-	//     (Close()/Stop()/Cancel()/etc. methods that finalize subordinate
-	//     resources by calling their Close)
+	//   - the call's CFG block is reached only via the "err != nil"
+	//     successor of some err-check branch (subsumes the simpler
+	//     AST "inside if-err body" rule and handles deeper nesting,
+	//     helper-block inlining, and goto-cleanup patterns)
+	//   - inside a function whose name suggests cleanup
+	//     (Close/Stop/Cancel/finalClose/cleanupX/etc.)
 	//   - sandwiched between an err-bearing assignment and an err-check
 	//     of the same variable: `_, err := X; r.Close(); if err != nil {...}`
 	if isCleanupShapedCall(call) {
-		if inErrorCleanupBlock(ctx.Func.Func.Body, expr.Pos()) ||
+		if dominatedByErrTrueBranch(ctx.CFG, expr.Pos()) ||
 			inCleanupFunction(ctx.Func.Func) ||
 			bracketedByErrCheck(ctx.Func.Func.Body, expr.Pos()) {
 			return nil
@@ -214,15 +215,164 @@ func isCleanupShapedCall(call *ast.CallExpr) bool {
 	return false
 }
 
-// inCleanupFunction reports whether the enclosing function's own name
-// is in the cleanup-method set. Closes inside a Close (or Stop, etc.)
-// method are finalizing subordinate resources — their discarded errors
-// are intentional.
+// inCleanupFunction reports whether the enclosing function's name
+// suggests it's doing resource cleanup. Uses substring matching against
+// a small keyword set so non-canonical names like finalClose,
+// doClose, cleanupResources, teardown all qualify.
+//
+// Risk of over-recognition is bounded because this gate only fires
+// alongside isCleanupShapedCall — a Read/Write inside a finalClose
+// still fires.
 func inCleanupFunction(fn *ast.FuncDecl) bool {
 	if fn == nil || fn.Name == nil {
 		return false
 	}
-	return cleanupMethodNames[fn.Name.Name]
+	name := strings.ToLower(fn.Name.Name)
+	for _, kw := range cleanupFuncKeywords {
+		if strings.Contains(name, kw) {
+			return true
+		}
+	}
+	return false
+}
+
+// cleanupFuncKeywords are case-insensitive substrings; if any appears
+// in the enclosing function's name, the function is treated as a
+// cleanup context for the purposes of suppressing Close-family error
+// discards.
+var cleanupFuncKeywords = []string{
+	"close",
+	"cleanup",
+	"dispose",
+	"finalize",
+	"teardown",
+	"shutdown",
+	"destroy",
+	"release",
+}
+
+// dominatedByErrTrueBranch reports whether the CFG block containing pos
+// is reachable only via the "err != nil" successor of some err-check
+// BlockBranch. Stronger than the AST `inside if-err body` check because
+// it works at the control-flow level: a Close inside a helper block
+// reachable only from an err-true edge counts, even if the AST nesting
+// is non-obvious.
+//
+// Algorithm:
+//
+//  1. Locate the CFG block containing pos.
+//  2. For each err-check BlockBranch B with two successors (then/else):
+//     a. Confirm target is reachable from B.Succs[0] (then branch).
+//     b. Confirm target is NOT reachable from B.Succs[1] (else/join).
+//     c. Confirm B dominates target (every path from entry to target
+//     goes through B).
+//     If all three hold, target is err-true-dominated.
+func dominatedByErrTrueBranch(g *cfg.Graph, pos token.Pos) bool {
+	if g == nil {
+		return false
+	}
+	target := findCFGBlock(g, pos)
+	if target == nil {
+		return false
+	}
+
+	for _, branch := range g.Blocks {
+		if branch.Kind != cfg.BlockBranch || len(branch.Succs) < 2 {
+			continue
+		}
+		if !blockHasErrCheckCond(branch) {
+			continue
+		}
+		if !cfgReaches(branch.Succs[0], target) {
+			continue
+		}
+		if cfgReaches(branch.Succs[1], target) {
+			continue // both branches reach target → ambiguous, skip
+		}
+		if cfgDominates(g, branch, target) {
+			return true
+		}
+	}
+	return false
+}
+
+// findCFGBlock returns the CFG block whose Nodes lexically contain pos,
+// or nil. Walks all blocks; for typical function-sized CFGs this is
+// O(blocks * stmts-per-block) which is small.
+func findCFGBlock(g *cfg.Graph, pos token.Pos) *cfg.Block {
+	for _, blk := range g.Blocks {
+		for _, n := range blk.Nodes {
+			if n.Pos() <= pos && pos <= n.End() {
+				return blk
+			}
+		}
+		for _, s := range blk.Stmts {
+			if s.Pos() <= pos && pos <= s.End() {
+				return blk
+			}
+		}
+	}
+	return nil
+}
+
+// blockHasErrCheckCond reports whether branch's condition node is an
+// err-shape comparison.
+func blockHasErrCheckCond(branch *cfg.Block) bool {
+	for _, n := range branch.Nodes {
+		if expr, ok := n.(ast.Expr); ok && isErrCheckCond(expr) {
+			return true
+		}
+	}
+	return false
+}
+
+// cfgReaches reports whether target is reachable from start via Succs.
+func cfgReaches(start, target *cfg.Block) bool {
+	if start == nil || target == nil {
+		return false
+	}
+	visited := map[int]bool{}
+	queue := []*cfg.Block{start}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if visited[cur.ID] {
+			continue
+		}
+		visited[cur.ID] = true
+		if cur == target {
+			return true
+		}
+		queue = append(queue, cur.Succs...)
+	}
+	return false
+}
+
+// cfgDominates reports whether every path from g.Entry to target passes
+// through dominator. BFS from entry skipping the dominator: if we can
+// reach target without crossing dominator, dominance fails.
+func cfgDominates(g *cfg.Graph, dominator, target *cfg.Block) bool {
+	if dominator == target {
+		return true
+	}
+	visited := map[int]bool{}
+	queue := []*cfg.Block{g.Entry}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if visited[cur.ID] {
+			continue
+		}
+		visited[cur.ID] = true
+		if cur == target {
+			return false // reached target without going through dominator
+		}
+		if cur == dominator {
+			continue // don't traverse past dominator
+		}
+		queue = append(queue, cur.Succs...)
+	}
+	return true
 }
 
 // bracketedByErrCheck reports whether the call at pos is sandwiched
@@ -295,46 +445,6 @@ func ifChecksErrName(stmt ast.Stmt, name string) bool {
 		return !found
 	})
 	return found
-}
-
-// inErrorCleanupBlock reports whether pos lies inside the body of an
-// `if <err-shape> != nil { ... }` statement. Walks up from pos through
-// the function body looking for an enclosing IfStmt whose Cond is a
-// nil-comparison against an error-named variable.
-//
-// Recognized condition shapes:
-//   - err != nil
-//   - someVarErr != nil (any identifier ending in "err"/"Err")
-//   - errors.Is(err, ...) — broader: any call referencing an err-named arg
-func inErrorCleanupBlock(funcBody *ast.BlockStmt, pos token.Pos) bool {
-	if funcBody == nil {
-		return false
-	}
-	// Walk the AST collecting the chain of IfStmt parents whose Body
-	// (not Else) contains pos. Then check each one's Cond.
-	for _, ifs := range enclosingIfStmts(funcBody, pos) {
-		if isErrCheckCond(ifs.Cond) {
-			return true
-		}
-	}
-	return false
-}
-
-// enclosingIfStmts returns every IfStmt under root whose Body block
-// lexically contains pos (not its Else branch). Outermost-first.
-func enclosingIfStmts(root ast.Node, pos token.Pos) []*ast.IfStmt {
-	var stack []*ast.IfStmt
-	ast.Inspect(root, func(n ast.Node) bool {
-		ifs, ok := n.(*ast.IfStmt)
-		if !ok {
-			return true
-		}
-		if ifs.Body != nil && ifs.Body.Pos() <= pos && pos <= ifs.Body.End() {
-			stack = append(stack, ifs)
-		}
-		return true
-	})
-	return stack
 }
 
 // isErrCheckCond reports whether expr is a recognized "this branch is

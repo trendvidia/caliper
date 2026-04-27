@@ -799,6 +799,70 @@ func read() error {
 	}
 }
 
+func TestUncheckedError_CFGErrTrueDominance(t *testing.T) {
+	// CFG advantage over the previous AST-based detector: a Close
+	// reachable only via the err-true edge of a check, even when the
+	// AST path between the check and the close is non-obvious (early
+	// return on the err-false side, helper blocks in between).
+	src := `package testpkg
+
+import "os"
+
+func read(name string) ([]byte, error) {
+	f, err := os.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	data := make([]byte, 1024)
+	if _, err := f.Read(data); err != nil {
+		// Cleanup nested behind another condition — still on the err-true
+		// path. AST detector caught this via lexical containment, but the
+		// CFG version should as well.
+		if name != "" {
+			f.Close()
+		}
+		return nil, err
+	}
+	return data, nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close on err-true CFG path), got %d: %s", got, findings[0].Message)
+	}
+}
+
+func TestUncheckedError_FinalCloseSubstringMatch(t *testing.T) {
+	// Substring match on cleanup keywords: a function named finalClose
+	// (database/sql idiom) is recognized as a cleanup context. Calls to
+	// Close inside it are intentional even outside any if-err block.
+	src := `package testpkg
+
+type stmt struct{}
+
+func (stmt) Close() error { return nil }
+
+type conn struct {
+	openStmt []stmt
+}
+
+func (c *conn) finalClose() error {
+	for _, s := range c.openStmt {
+		s.Close()  // unconditional cleanup at function tail
+	}
+	return nil
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Close in finalClose-named function), got %d: %s", got, findings[0].Message)
+	}
+}
+
 func TestUncheckedError_CloseInsideCloseMethod(t *testing.T) {
 	// Pattern (os/root_openat.go:35 in stdlib): a Close-named method
 	// calls another Close to finalize a subordinate resource. The
