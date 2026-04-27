@@ -125,37 +125,43 @@ the serialization-layer-for-go/types lift.
   caching since they alter source.
 - [x] Per-process fingerprint memo so a fan-out of N tool calls walks
   the source tree once.
-- [ ] Cache eviction (currently unbounded). Note in docs: clear via
-  `rm -rf $TMPDIR/caliper-cache`.
+- [x] Cache eviction (mtime-based LRU; default 100 MB cap, override
+  via `CALIPER_CACHE_MAX_BYTES`).
+- [x] Cache-hit progress notification so MCP clients see fast-path
+  completions instead of perceived hangs.
 - [ ] Future: explore `*types.Package` rehydration via go/gcexportdata
   for cross-tool engine sharing. Bigger lift but eliminates the cold-
   load tax even when args differ.
 
-### Consolidate `find_unchecked_error` and `find_error_swallow`
+### Consolidate `find_unchecked_error` and `find_error_swallow` ✓
 
-The two checks fire on substantially overlapping patterns with different
-wording, so users see the same hit reported twice with different `kind`
-values. Sweeps on stdlib showed >50% overlap.
+The two checks fired on substantially overlapping patterns with different
+wording. Sweeps on stdlib showed >50% overlap.
 
-- [ ] Audit which patterns each check uniquely catches
-- [ ] Merge into one check with a `mode` parameter (`strict`/`lenient`),
-  OR have one explicitly defer to the other (e.g. `error_swallow` skips
-  any finding `unchecked_error` would also raise)
-- [ ] Update tool descriptions and the Phase-1 docs to reflect the
-  consolidated tool
+- [x] Audit each check's unique vs shared coverage — ErrorSwallow had
+  value-use severity escalation; UncheckedError had the rich allowlist
+  + cleanup-path detector. Different policies, mostly-shared detection.
+- [x] Merge into one check: `UncheckedError` gains a `Strict bool`
+  field (blank-id discards always flagged + value-use escalation
+  ported in) and a `KindName string` for the alias. `find_error_swallow`
+  is now a thin alias that constructs `UncheckedError{Strict: true,
+  KindName: "error_swallow"}` so clients routing by kind still work.
+  `errorswallow.go` deleted (252 lines removed).
+- [x] Update tool descriptions to reflect the alias relationship.
 
 ### Per-project `.caliper.pxf` discoverability
 
-The per-analysis-path config resolution shipped this session, but the
-MCP tool descriptions (returned via the protocol) don't mention it.
-LLMs and human callers have no signal that dropping a `.caliper.pxf`
-near their project changes behavior.
+The per-analysis-path config resolution shipped this session, but most
+MCP tool descriptions (returned via the protocol) still don't mention
+it. LLMs and human callers have no signal that dropping a
+`.caliper.pxf` near their project changes behavior.
 
 - [ ] Add "respects `.caliper.pxf` walking up from the analysis path" to
   the descriptions of `find_unchecked_error`, `find_resource_leak`, and
   any other check that consults the config
-- [ ] Mirror the same line in `docs/getting-started.md`'s "Project
-  Configuration" section
+  (started: `find_error_swallow` now mentions it)
+- [x] `docs/getting-started.md` covers the project-configuration flow
+  in its "Project Configuration" section.
 - [ ] Consider an `mcp__caliper__describe_config` tool that reports which
   `.caliper.pxf` (if any) was applied for a given path — helps debug
   "why is this finding still firing"
@@ -190,19 +196,59 @@ Two narrow bugs found while writing tests for unrelated features:
 Both are local fixes (≤20 lines each) but defensive — small payoff
 individually, easy to do as a cleanup pass.
 
-### CHANGELOG / release notes
+### CHANGELOG / release notes ✓
 
-Caliper's behavior has shifted substantially across recent commits
-(Go 1.22+ loop scoping, hash conformance, cleanup-path detection,
-engine-scoped config, mcp-go fork). Users updating the binary have no
-signal about what changed.
-
-- [ ] `CHANGELOG.md` at repo root — entries grouped by user-visible
-  category (analyzer behavior changes, config schema, transport,
-  internal)
-- [ ] Update on each release that touches user-observable behavior
+- [x] `CHANGELOG.md` at repo root, grouped by user-visible category
+  (analyzer behavior changes, config schema, transport, internal).
+  Initial Unreleased section seeded from this session's commits.
+- [x] Server reports its version in the MCP initialize handshake —
+  `Version` var in `cmd/caliper-mcp` set via
+  `-ldflags "-X main.Version=..."`, falling back to `dev-<vcs>[-dirty]`
+  from `runtime/debug.BuildInfo`.
+- [ ] Update CHANGELOG on each release that touches user-observable
+  behavior (process discipline, not code).
 - [ ] Eventually: tie to git tags so `caliper --version` can print
-  the relevant changelog entry
+  the relevant changelog entry.
+
+### Codebase audit cleanup ✓
+
+Items surfaced by a full-codebase audit and shipped together with the
+operational-quality work above. Not part of any phase plan; recording
+here so the deltas are tracked.
+
+- [x] **CI** — `.github/workflows/ci.yml` runs gofmt + vet + build +
+  `test -race` + golangci-lint v2 on push and PR. `.golangci.yml`
+  enables conservative core linters; errcheck disabled because
+  `find_unchecked_error` is the SoT for that family on this codebase.
+- [x] **Version constant** — `cmd/caliper-mcp` exposes a `Version` var
+  set via `-ldflags`, with VCS-derived fallback. Reported in the
+  MCP initialize handshake and the stderr-tee startup line.
+- [x] **`pkg/mcp/server.go` decomposition** — was 2007 lines mixing
+  lifecycle / handlers / formatters / predicates / params / engine
+  plumbing. Split into focused files (`server.go` 250, `handlers.go`
+  1216, `findings.go` 337, `engine.go` 122, `predicates.go` 97,
+  `params.go` 84). No behavior change.
+- [x] **`lookupIdent` O(n) hotspot** — was scanning `types.Info.Defs`
+  per free-variable lookup in race/slice-append-race templates.
+  Memoized via lazy `defsByName` map on `TemplateContext`.
+- [x] **`findInnermostBlock`** moved from `slicerace.go` to a dedicated
+  `astutil.go`; both `errors.go` and `slicerace.go` use it from a
+  clear shared location.
+- [x] **Test fixture sharing** — `setupProject` now memoizes loaded
+  engines by `(src, goVersion)` hash; identical sources don't
+  re-pay `analysis.NewEngine`. Modest in practice (most fixtures
+  are unique) but the infrastructure is in place for future tests.
+- [x] **`doc.go` per package** — every package under `pkg/` (except
+  generated `caliperpb`) now has a dedicated `doc.go` with the
+  package-level comment, per Go convention.
+- [x] **golangci-lint findings** — 4 staticcheck issues fixed and 4
+  dead-code helpers deleted (`buildDeferReleasePredicate`,
+  `statementsAfter`, `isImmutableValueType`, `allTools()`) when
+  introducing CI.
+- [x] **Vendored `mcp-go` un-modified** — caliper now depends on the
+  trendvidia/mcp-go fork via `replace` directive; the only patch
+  (panic recovery in `toolCallWorker`) lives in the fork as a
+  trackable upstream change.
 
 ## Phase 6 — Coccinelle Parity
 
