@@ -242,7 +242,7 @@ func inCleanupFunction(fn *ast.FuncDecl) bool {
 // discards.
 var cleanupFuncKeywords = []string{
 	"close",
-	"cleanup",
+	"clean", // covers cleanup, cleaner, cleanResources, etc.
 	"dispose",
 	"finalize",
 	"teardown",
