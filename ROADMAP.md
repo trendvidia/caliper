@@ -149,52 +149,41 @@ wording. Sweeps on stdlib showed >50% overlap.
   `errorswallow.go` deleted (252 lines removed).
 - [x] Update tool descriptions to reflect the alias relationship.
 
-### Per-project `.caliper.pxf` discoverability
+### Per-project `.caliper.pxf` discoverability ✓
 
-The per-analysis-path config resolution shipped this session, but most
-MCP tool descriptions (returned via the protocol) still don't mention
-it. LLMs and human callers have no signal that dropping a
-`.caliper.pxf` near their project changes behavior.
-
-- [ ] Add "respects `.caliper.pxf` walking up from the analysis path" to
-  the descriptions of `find_unchecked_error`, `find_resource_leak`, and
-  any other check that consults the config
-  (started: `find_error_swallow` now mentions it)
+- [x] All 17 find_*/check_* MCP tool descriptions now end with a
+  uniform two-line note: "Respects .caliper.pxf walking up from the
+  analysis path; the project's infallible block, severity overrides,
+  and rule enable/disable list apply." Mutation tools (apply_transform
+  et al) and inspection helpers (explain_*, list_equivalences,
+  run_patterns) intentionally skipped.
 - [x] `docs/getting-started.md` covers the project-configuration flow
   in its "Project Configuration" section.
 - [ ] Consider an `mcp__caliper__describe_config` tool that reports which
   `.caliper.pxf` (if any) was applied for a given path — helps debug
   "why is this finding still firing"
 
-### Targeted `fmt.State` Format-method recognizer
+### Targeted `fmt.State` Format-method recognizer ✓
 
-Largest remaining noise source on stdlib (~117 `fmt.Fprintf` hits). Most
-fire inside `func (T) Format(s fmt.State, c rune)` methods writing to
-`s` — the writer is `fmt.State`, an interface, but in practice always
-backed by an internal buffer when called by the `fmt` package. Pattern-
-match the enclosing function shape rather than do full writer-flow.
+- [x] Recognizer: when the call is inside a `func (T) Format(s fmt.State,
+  c rune)` method AND the writer arg is the s parameter, suppress.
+  Implemented as `formatMethodStateParam` returning the parameter
+  name; `isInfallibleWriterArg` short-circuits when the writer
+  expression is an *ast.Ident with that name.
+- [x] Sanity test: writes to a non-parameter fmt.State (closed-over
+  variable, struct field) still fire.
+- [x] Honors `disable_writers["fmt.State"]` for projects that want
+  strict checking inside Format methods.
 
-- [ ] Recognizer: when the call is inside a method matching
-  `Format(_ fmt.State, _ rune)` AND the writer arg is the fmt.State
-  parameter, suppress
-- [ ] Regression test: a `Format` method that takes errors-mattering
-  writes still fires
-- [ ] Cost: ~30 lines, no flow analysis required
+### Pre-existing analyzer gaps surfaced this session ✓
 
-### Pre-existing analyzer gaps surfaced this session
-
-Two narrow bugs found while writing tests for unrelated features:
-
-- [ ] `find_race_condition` doesn't recognize `count++` /
-  `*ast.IncDecStmt` as a write — only `*ast.AssignStmt` is checked.
-  Misses races on counter-style mutations.
-- [ ] `find_unchecked_error` / `bracketedByErrCheck` only sees uses
-  in the same lexical block as the call — ignores uses outside the
-  enclosing for/switch. Limits the "save err, do thing, check err"
-  recognizer.
-
-Both are local fixes (≤20 lines each) but defensive — small payoff
-individually, easy to do as a cleanup pass.
+- [x] `find_race_condition` recognizes `count++` / `*ast.IncDecStmt`
+  as a write. Both `identWrittenInNode` and `identWrittenInStmts`
+  now switch on AssignStmt OR IncDecStmt with shared LHS-matching.
+- [x] `find_unchecked_error` / `bracketedByErrCheck` walks outward
+  through enclosing blocks rather than only the immediately-enclosing
+  one. Patterns like `data, err := X(); if cond { f.Close() }; if err != nil`
+  are now recognized as cleanup-bracketed.
 
 ### CHANGELOG / release notes ✓
 
