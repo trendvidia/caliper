@@ -108,7 +108,7 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 		return nil
 	}
 
-	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible) {
+	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible, ctx.Func.Func) {
 		return nil
 	}
 
@@ -192,7 +192,7 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 		return nil
 	}
 
-	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible) {
+	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible, ctx.Func.Func) {
 		return nil
 	}
 
@@ -562,7 +562,7 @@ func enclosingBlocksAndIndex(root ast.Node, pos token.Pos) []blockIdx {
 		if !ok {
 			return true
 		}
-		if !(block.Pos() <= pos && pos <= block.End()) {
+		if block.Pos() > pos || pos > block.End() {
 			return true
 		}
 		for i, stmt := range block.List {

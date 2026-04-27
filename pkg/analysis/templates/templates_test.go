@@ -390,6 +390,55 @@ func writes() {
 	}
 }
 
+func TestUncheckedError_FmtStateFormatMethod(t *testing.T) {
+	// Inside a `func (T) Format(s fmt.State, c rune)` method, writes to
+	// s via fmt.Fprint* route through fmt's internal buffer and never
+	// fail in practice. Stdlib has ~50+ such call sites (math/big,
+	// time, net/url, html/template, etc.) — they were the dominant
+	// residual noise after the writer-arg + value-based suppressions.
+	src := `package testpkg
+
+import "fmt"
+
+type myInt int
+
+func (m myInt) Format(s fmt.State, c rune) {
+	fmt.Fprintf(s, "%d", int(m))     // ← suppressed
+	fmt.Fprintln(s, "trailing")       // ← suppressed
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if got := len(findingsOfKind(findings, "unchecked_error")); got > 0 {
+		t.Errorf("expected 0 findings (Fprint* to fmt.State param of Format method), got %d: %s", got, findings[0].Message)
+	}
+}
+
+func TestUncheckedError_FmtStateOnlySuppressesParam(t *testing.T) {
+	// Sanity: the recognizer fires only when the writer arg IS the
+	// fmt.State parameter. Writing to a different fmt.State value
+	// (a closed-over State, a State stored on a struct field) doesn't
+	// get the pass — its concrete backing isn't statically known here.
+	src := `package testpkg
+
+import "fmt"
+
+type myInt int
+
+func (m myInt) Format(s fmt.State, c rune) {
+	var other fmt.State
+	fmt.Fprintf(other, "%d", int(m))  // ← NOT suppressed: not the s param
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &UncheckedError{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
+		t.Error("expected unchecked_error finding when Fprint* writes to non-param fmt.State")
+	}
+}
+
 func TestUncheckedError_HashConformanceConcrete(t *testing.T) {
 	// A type that structurally implements hash.Hash inherits the
 	// "Write never returns an error" contract — even if it's a

@@ -289,7 +289,10 @@ func (s *InfallibleState) disablesWriter(key string) bool {
 // not be flagged as unchecked errors.
 //
 // state may be nil — the hardcoded stdlib defaults still apply in that case.
-func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info, state *InfallibleState) bool {
+// enclosing is the FuncDecl containing the call (or nil); used by the
+// fmt.State Format-method recognizer to identify writes to s in
+// `func (T) Format(s fmt.State, c rune)`.
+func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info, state *InfallibleState, enclosing *ast.FuncDecl) bool {
 	if info == nil {
 		return false
 	}
@@ -302,11 +305,11 @@ func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info, state *Infall
 		if selection := info.Selections[fn]; selection != nil {
 			return isInfallibleMethodCall(selection, state)
 		}
-		return isInfallibleFuncCall(info.ObjectOf(fn.Sel), call, info, state)
+		return isInfallibleFuncCall(info.ObjectOf(fn.Sel), call, info, state, enclosing)
 	case *ast.Ident:
 		// Bare identifier call: an intra-package function or a name
 		// brought in via dot-import.
-		return isInfallibleFuncCall(info.ObjectOf(fn), call, info, state)
+		return isInfallibleFuncCall(info.ObjectOf(fn), call, info, state, enclosing)
 	}
 	return false
 }
@@ -346,6 +349,45 @@ func isInfallibleMethodCall(selection *types.Selection, state *InfallibleState) 
 		return true
 	}
 	return false
+}
+
+// formatMethodStateParam reports whether fn is shaped like a fmt-package
+// Format method — i.e., a method named "Format" whose first parameter is
+// of type fmt.State — and returns the s-parameter name if so. Empty
+// string means "not a Format method".
+//
+// When the call site writes to the s parameter via fmt.Fprint*, the
+// writes route through fmt's internal buffer; their error returns are
+// not meaningful in practice. Recognizing this pattern eliminates the
+// dominant residual noise in caliper's analysis of stdlib (~50+ hits
+// across math/big, time, net/url, html/template, etc.).
+func formatMethodStateParam(fn *ast.FuncDecl, info *types.Info) string {
+	if fn == nil || fn.Name == nil || fn.Name.Name != "Format" {
+		return ""
+	}
+	if fn.Type == nil || fn.Type.Params == nil || len(fn.Type.Params.List) < 1 {
+		return ""
+	}
+	first := fn.Type.Params.List[0]
+	if len(first.Names) == 0 {
+		return ""
+	}
+	t := info.TypeOf(first.Type)
+	if t == nil {
+		return ""
+	}
+	named, ok := t.(*types.Named)
+	if !ok {
+		return ""
+	}
+	obj := named.Obj()
+	if obj == nil || obj.Pkg() == nil {
+		return ""
+	}
+	if obj.Pkg().Path() != "fmt" || obj.Name() != "State" {
+		return ""
+	}
+	return first.Names[0].Name
 }
 
 // implementsHashHash reports whether t structurally has the method set
@@ -418,7 +460,7 @@ func signatureMatches(sig *types.Signature, params, results []string) bool {
 // isInfallibleFuncCall checks whether a non-method call targets an
 // infallible package-level function (built-in or user-registered) or a
 // transitively-infallible writer-arg function.
-func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info, state *InfallibleState) bool {
+func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info, state *InfallibleState, enclosing *ast.FuncDecl) bool {
 	fn, ok := obj.(*types.Func)
 	if !ok || fn.Pkg() == nil {
 		return false
@@ -431,14 +473,19 @@ func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info
 		return true
 	}
 	if writerArgInfallibleFuncs[key] && len(call.Args) >= 1 {
-		return isInfallibleWriterArg(call.Args[0], info, state)
+		return isInfallibleWriterArg(call.Args[0], info, state, enclosing)
 	}
 	return false
 }
 
 // isInfallibleWriterArg reports whether arg is a writer whose Write method
-// is infallible. Two paths:
+// is infallible. Three paths:
 //
+//   - Format-method context: when the enclosing function is a
+//     `func (T) Format(s fmt.State, c rune)` and arg is the s parameter,
+//     the writes go through fmt's internal buffer and never fail in
+//     practice. Recognizing this kills the dominant noise pattern in
+//     stdlib's Format implementations.
 //   - Value-based: a direct reference to a package-level variable in the
 //     infallibleStdlibWriterVars set (e.g. os.Stdout, os.Stderr). Other
 //     values of the same type (like a *os.File pointing at a real file)
@@ -446,8 +493,15 @@ func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info
 //   - Type-based: a value whose static type is a hardcoded infallible
 //     writer (bytes.Buffer, strings.Builder) or a user-registered one.
 //
-// Both paths consult disabled_writers to honor user overrides.
-func isInfallibleWriterArg(arg ast.Expr, info *types.Info, state *InfallibleState) bool {
+// All paths consult disabled_writers to honor user overrides.
+func isInfallibleWriterArg(arg ast.Expr, info *types.Info, state *InfallibleState, enclosing *ast.FuncDecl) bool {
+	if enclosing != nil && !state.disablesWriter("fmt.State") {
+		if pname := formatMethodStateParam(enclosing, info); pname != "" {
+			if ident, ok := arg.(*ast.Ident); ok && ident.Name == pname {
+				return true
+			}
+		}
+	}
 	if sel, ok := arg.(*ast.SelectorExpr); ok {
 		if v, ok := info.ObjectOf(sel.Sel).(*types.Var); ok && v.Pkg() != nil {
 			key := v.Pkg().Path() + "." + v.Name()
