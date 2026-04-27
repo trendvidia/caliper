@@ -209,46 +209,87 @@ func compileGlob(pattern string) (*regexp.Regexp, error) {
 	return regexp.Compile(sb.String())
 }
 
-// Package-level state holding the project-local Infallible config. Read
-// per-call by isInfallibleErrorReturn; written exactly once at engine boot
-// via ConfigureInfallible. Tests may invoke ConfigureInfallible repeatedly
-// — analyses are not concurrent with config changes in either case, so no
-// mutex is needed.
-var (
-	userInfallibleMethods  *keySet
-	userInfallibleFuncs    *keySet
-	userInfallibleWriters  *keySet
-	disabledStdlibMethods  *keySet
-	disabledStdlibFuncs    *keySet
-	disabledStdlibWriters  *keySet
-)
+// InfallibleState holds the project-local Infallible config materialized
+// into the keysets the matcher consults. Engine-scoped (held on the
+// engine cache entry, threaded through TemplateContext) so concurrent
+// analyses on different paths can each see their own config without
+// racing on package-level state. A nil *InfallibleState means "no
+// project-local extensions" — the hardcoded stdlib defaults still apply.
+type InfallibleState struct {
+	userMethods     *keySet
+	userFuncs       *keySet
+	userWriters     *keySet
+	disabledMethods *keySet
+	disabledFuncs   *keySet
+	disabledWriters *keySet
+}
 
-// ConfigureInfallible installs (or clears, if inf is nil) the project-local
-// extensions to find_unchecked_error's allowlist. Intended to be called once
-// at startup, before any analysis runs.
-func ConfigureInfallible(inf *pb.Infallible) {
+// NewInfallibleState materializes inf into matchable keysets, logging
+// any malformed entries to stderr with a field-name prefix. Returns nil
+// if inf is nil — callers handle nil as "no project config".
+func NewInfallibleState(inf *pb.Infallible) *InfallibleState {
 	if inf == nil {
-		userInfallibleMethods = nil
-		userInfallibleFuncs = nil
-		userInfallibleWriters = nil
-		disabledStdlibMethods = nil
-		disabledStdlibFuncs = nil
-		disabledStdlibWriters = nil
-		return
+		return nil
 	}
-	userInfallibleMethods = loadKeySet(inf.GetMethods(), "methods")
-	userInfallibleFuncs = loadKeySet(inf.GetFunctions(), "functions")
-	userInfallibleWriters = loadKeySet(inf.GetWriters(), "writers")
-	disabledStdlibMethods = loadKeySet(inf.GetDisableMethods(), "disable_methods")
-	disabledStdlibFuncs = loadKeySet(inf.GetDisableFunctions(), "disable_functions")
-	disabledStdlibWriters = loadKeySet(inf.GetDisableWriters(), "disable_writers")
+	return &InfallibleState{
+		userMethods:     loadKeySet(inf.GetMethods(), "methods"),
+		userFuncs:       loadKeySet(inf.GetFunctions(), "functions"),
+		userWriters:     loadKeySet(inf.GetWriters(), "writers"),
+		disabledMethods: loadKeySet(inf.GetDisableMethods(), "disable_methods"),
+		disabledFuncs:   loadKeySet(inf.GetDisableFunctions(), "disable_functions"),
+		disabledWriters: loadKeySet(inf.GetDisableWriters(), "disable_writers"),
+	}
+}
+
+func (s *InfallibleState) matchUserMethod(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.userMethods.Match(key)
+}
+
+func (s *InfallibleState) matchUserFunc(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.userFuncs.Match(key)
+}
+
+func (s *InfallibleState) matchUserWriter(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.userWriters.Match(key)
+}
+
+func (s *InfallibleState) disablesMethod(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.disabledMethods.Match(key)
+}
+
+func (s *InfallibleState) disablesFunc(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.disabledFuncs.Match(key)
+}
+
+func (s *InfallibleState) disablesWriter(key string) bool {
+	if s == nil {
+		return false
+	}
+	return s.disabledWriters.Match(key)
 }
 
 // isInfallibleErrorReturn reports whether the call targets a stdlib API
 // whose error return is documented or conventionally treated as always nil,
 // or a project-local API the user has registered as such. Such calls should
 // not be flagged as unchecked errors.
-func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info) bool {
+//
+// state may be nil — the hardcoded stdlib defaults still apply in that case.
+func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info, state *InfallibleState) bool {
 	if info == nil {
 		return false
 	}
@@ -259,13 +300,13 @@ func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info) bool {
 		// selections — sel.X is a package identifier — so they fall
 		// through to the package-level function path.
 		if selection := info.Selections[fn]; selection != nil {
-			return isInfallibleMethodCall(selection)
+			return isInfallibleMethodCall(selection, state)
 		}
-		return isInfallibleFuncCall(info.ObjectOf(fn.Sel), call, info)
+		return isInfallibleFuncCall(info.ObjectOf(fn.Sel), call, info, state)
 	case *ast.Ident:
 		// Bare identifier call: an intra-package function or a name
 		// brought in via dot-import.
-		return isInfallibleFuncCall(info.ObjectOf(fn), call, info)
+		return isInfallibleFuncCall(info.ObjectOf(fn), call, info, state)
 	}
 	return false
 }
@@ -273,7 +314,7 @@ func isInfallibleErrorReturn(call *ast.CallExpr, info *types.Info) bool {
 // isInfallibleMethodCall checks whether a method-selection's receiver type
 // and method name fall into the infallible-methods allowlist (built-in or
 // user-registered, with built-in entries masked by the user's disable list).
-func isInfallibleMethodCall(selection *types.Selection) bool {
+func isInfallibleMethodCall(selection *types.Selection, state *InfallibleState) bool {
 	fn, ok := selection.Obj().(*types.Func)
 	if !ok {
 		return false
@@ -292,19 +333,15 @@ func isInfallibleMethodCall(selection *types.Selection) bool {
 		return false
 	}
 	key := obj.Pkg().Path() + "." + obj.Name() + "." + fn.Name()
-	if infallibleStdlibMethods[key] && !disabledStdlibMethods.Match(key) {
+	if infallibleStdlibMethods[key] && !state.disablesMethod(key) {
 		return true
 	}
-	if userInfallibleMethods.Match(key) {
+	if state.matchUserMethod(key) {
 		return true
 	}
 	// Fall back: when a concrete type implements hash.Hash structurally,
-	// inherit the "Write never returns an error" contract. The stdlib
-	// has many concrete digest types (sha256.digest, sha3.state, the
-	// FIPS-internal hashes, etc.) that the static type-name keying
-	// otherwise misses. Gated on hash.Hash.Write not being explicitly
-	// disabled by the user, so disabling propagates to the inheritance.
-	if fn.Name() == "Write" && !disabledStdlibMethods.Match("hash.Hash.Write") &&
+	// inherit the "Write never returns an error" contract.
+	if fn.Name() == "Write" && !state.disablesMethod("hash.Hash.Write") &&
 		implementsHashHash(origRecvType) {
 		return true
 	}
@@ -381,20 +418,20 @@ func signatureMatches(sig *types.Signature, params, results []string) bool {
 // isInfallibleFuncCall checks whether a non-method call targets an
 // infallible package-level function (built-in or user-registered) or a
 // transitively-infallible writer-arg function.
-func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info) bool {
+func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info, state *InfallibleState) bool {
 	fn, ok := obj.(*types.Func)
 	if !ok || fn.Pkg() == nil {
 		return false
 	}
 	key := fn.Pkg().Path() + "." + fn.Name()
-	if infallibleStdlibFuncs[key] && !disabledStdlibFuncs.Match(key) {
+	if infallibleStdlibFuncs[key] && !state.disablesFunc(key) {
 		return true
 	}
-	if userInfallibleFuncs.Match(key) {
+	if state.matchUserFunc(key) {
 		return true
 	}
 	if writerArgInfallibleFuncs[key] && len(call.Args) >= 1 {
-		return isInfallibleWriterArg(call.Args[0], info)
+		return isInfallibleWriterArg(call.Args[0], info, state)
 	}
 	return false
 }
@@ -410,11 +447,11 @@ func isInfallibleFuncCall(obj types.Object, call *ast.CallExpr, info *types.Info
 //     writer (bytes.Buffer, strings.Builder) or a user-registered one.
 //
 // Both paths consult disabled_writers to honor user overrides.
-func isInfallibleWriterArg(arg ast.Expr, info *types.Info) bool {
+func isInfallibleWriterArg(arg ast.Expr, info *types.Info, state *InfallibleState) bool {
 	if sel, ok := arg.(*ast.SelectorExpr); ok {
 		if v, ok := info.ObjectOf(sel.Sel).(*types.Var); ok && v.Pkg() != nil {
 			key := v.Pkg().Path() + "." + v.Name()
-			if infallibleStdlibWriterVars[key] && !disabledStdlibWriters.Match(key) {
+			if infallibleStdlibWriterVars[key] && !state.disablesWriter(key) {
 				return true
 			}
 		}
@@ -436,8 +473,8 @@ func isInfallibleWriterArg(arg ast.Expr, info *types.Info) bool {
 		return false
 	}
 	key := obj.Pkg().Path() + "." + obj.Name()
-	if infallibleStdlibWriters[key] && !disabledStdlibWriters.Match(key) {
+	if infallibleStdlibWriters[key] && !state.disablesWriter(key) {
 		return true
 	}
-	return userInfallibleWriters.Match(key)
+	return state.matchUserWriter(key)
 }

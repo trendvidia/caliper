@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
+	"github.com/trendvidia/caliper/pkg/analysis/templates"
 )
 
 const defaultMaxCacheEntries = 3
@@ -36,8 +37,9 @@ type engineCache struct {
 }
 
 type cacheEntry struct {
-	path   string
-	engine *analysis.Engine
+	path       string
+	engine     *analysis.Engine
+	infallible *templates.InfallibleState // engine-scoped project-local config; nil = none
 }
 
 func newEngineCache(maxSize int) *engineCache {
@@ -112,14 +114,18 @@ func (c *engineCache) lock(absPath string) func() {
 }
 
 // put adds an engine to the cache, evicting the least recently used
-// entry if the cache is full.
-func (c *engineCache) put(absPath string, engine *analysis.Engine) {
+// entry if the cache is full. If state is non-nil, it is stored alongside
+// the engine and will be returned by infallibleFor for subsequent lookups
+// at the same path.
+func (c *engineCache) put(absPath string, engine *analysis.Engine, state *templates.InfallibleState) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	// Update existing entry.
 	if elem, ok := c.entries[absPath]; ok {
-		elem.Value.(*cacheEntry).engine = engine
+		entry := elem.Value.(*cacheEntry)
+		entry.engine = engine
+		entry.infallible = state
 		c.order.MoveToFront(elem)
 		return
 	}
@@ -135,9 +141,29 @@ func (c *engineCache) put(absPath string, engine *analysis.Engine) {
 		}
 	}
 
-	entry := &cacheEntry{path: absPath, engine: engine}
+	entry := &cacheEntry{path: absPath, engine: engine, infallible: state}
 	elem := c.order.PushFront(entry)
 	c.entries[absPath] = elem
+}
+
+// infallibleFor returns the cached InfallibleState for the engine that
+// covers absPath (exact or sub-path match), or nil if none is cached.
+// Read under the same mutex as get so a concurrent put doesn't return a
+// torn engine/state pair.
+func (c *engineCache) infallibleFor(absPath string) *templates.InfallibleState {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if elem, ok := c.entries[absPath]; ok {
+		return elem.Value.(*cacheEntry).infallible
+	}
+	for _, elem := range c.entries {
+		entry := elem.Value.(*cacheEntry)
+		if isSubPath(entry.path, absPath) {
+			return entry.infallible
+		}
+	}
+	return nil
 }
 
 // invalidate removes the engine for the given path from the cache.

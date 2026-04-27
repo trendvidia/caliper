@@ -40,34 +40,49 @@ type Template interface {
 
 // TemplateContext provides everything a template needs.
 type TemplateContext struct {
-	Engine  *analysis.Engine
-	Func    *analysis.FuncContext
-	CFG     *cfg.Graph
-	Pattern *patterns.Pattern                // optional, depends on the template
-	Fset    *token.FileSet
-	IPC     *analysis.InterProceduralContext // optional, nil for intra-procedural
+	Engine     *analysis.Engine
+	Func       *analysis.FuncContext
+	CFG        *cfg.Graph
+	Pattern    *patterns.Pattern                // optional, depends on the template
+	Fset       *token.FileSet
+	IPC        *analysis.InterProceduralContext // optional, nil for intra-procedural
+	Infallible *InfallibleState                 // project-local infallibility config; nil = none
 }
 
 // BuildContext creates a TemplateContext for a function.
 func BuildContext(engine *analysis.Engine, fc *analysis.FuncContext) *TemplateContext {
+	return BuildContextWithConfig(engine, fc, nil)
+}
+
+// BuildContextWithConfig is like BuildContext but attaches project-local
+// infallibility state for use by find_unchecked_error and related templates.
+func BuildContextWithConfig(engine *analysis.Engine, fc *analysis.FuncContext, state *InfallibleState) *TemplateContext {
 	g := cfg.Build(engine.Fset(), fc.Func, fc.Info)
 	return &TemplateContext{
-		Engine: engine,
-		Func:   fc,
-		CFG:    g,
-		Fset:   engine.Fset(),
+		Engine:     engine,
+		Func:       fc,
+		CFG:        g,
+		Fset:       engine.Fset(),
+		Infallible: state,
 	}
 }
 
 // RunTemplate runs a template across all functions in the engine.
 // Analysis of each function is parallelized for performance on large codebases.
 func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
+	return RunTemplateWithConfig(engine, tmpl, nil)
+}
+
+// RunTemplateWithConfig is like RunTemplate but attaches project-local
+// infallibility state to every function's TemplateContext. Pass state=nil
+// for "no project-local config" (equivalent to RunTemplate).
+func RunTemplateWithConfig(engine *analysis.Engine, tmpl Template, state *InfallibleState) []Finding {
 	funcs := engine.FuncNodes()
 	if len(funcs) <= 1 {
 		if len(funcs) == 0 {
 			return nil
 		}
-		ctx := BuildContext(engine, funcs[0])
+		ctx := BuildContextWithConfig(engine, funcs[0], state)
 		return filterSuppressed(engine, tmpl.Analyze(ctx))
 	}
 
@@ -101,7 +116,7 @@ func RunTemplate(engine *analysis.Engine, tmpl Template) []Finding {
 				}
 			}()
 
-			ctx := BuildContext(engine, fc)
+			ctx := BuildContextWithConfig(engine, fc, state)
 			findings := tmpl.Analyze(ctx)
 
 			if len(findings) > 0 {

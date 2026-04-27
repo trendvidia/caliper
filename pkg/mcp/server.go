@@ -52,8 +52,6 @@ func NewServer() (*Server, error) {
 		return nil, fmt.Errorf("loading config: %w", err)
 	}
 
-	templates.ConfigureInfallible(cfg.Infallible())
-
 	cacheSize := defaultMaxCacheEntries
 	if cfg.MaxCacheEntries() > 0 {
 		cacheSize = cfg.MaxCacheEntries()
@@ -256,8 +254,43 @@ func (s *Server) getEngineWithProgress(path string, prog *progress) (*analysis.E
 		prog.send(1, 3, "Packages loaded")
 	}
 
-	s.cache.put(absPath, eng)
+	// Resolve project-local config by walking up from the analysis path.
+	// Falls back to the server-boot config if no project file is found —
+	// the boot config still governs cache size, severity, etc., and
+	// supplies an Infallible block as a global default.
+	state := s.infallibleStateFor(absPath)
+	s.cache.put(absPath, eng, state)
 	return eng, unlock, nil
+}
+
+// infallibleStateFor returns the project-local InfallibleState for the
+// given analysis path: walks up from absPath looking for .caliper.pxf,
+// falling back to the server-boot config if no project-local file
+// exists. The two are NOT merged — a project file fully overrides.
+func (s *Server) infallibleStateFor(absPath string) *templates.InfallibleState {
+	cfg, err := config.Load(absPath)
+	if err != nil {
+		// Fall back to boot config silently — config-load errors
+		// shouldn't crash analysis.
+		fmt.Fprintf(os.Stderr, "caliper: load project config from %s: %v\n", absPath, err)
+		return templates.NewInfallibleState(s.cfg.Infallible())
+	}
+	if inf := cfg.Infallible(); inf != nil {
+		return templates.NewInfallibleState(inf)
+	}
+	return templates.NewInfallibleState(s.cfg.Infallible())
+}
+
+// runTemplate runs tmpl against engine with the project-local
+// InfallibleState resolved for path. Wraps templates.RunTemplateWithConfig
+// so handlers don't need to thread the state through themselves.
+func (s *Server) runTemplate(path string, engine *analysis.Engine, tmpl templates.Template) []templates.Finding {
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = path
+	}
+	state := s.cache.infallibleFor(absPath)
+	return templates.RunTemplateWithConfig(engine, tmpl, state)
 }
 
 // invalidateEngine removes the cached engine for the given path.
@@ -519,7 +552,7 @@ func (s *Server) handleFindResourceLeak(ctx context.Context, req mcpsdk.CallTool
 	if prog.active() {
 		prog.send(2, 3, "Analyzing resource leaks...")
 	}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	if prog.active() {
 		prog.send(3, 3, "Done")
 	}
@@ -548,7 +581,7 @@ func (s *Server) handleFindUncheckedError(ctx context.Context, req mcpsdk.CallTo
 	if prog.active() {
 		prog.send(2, 3, "Checking for unchecked errors...")
 	}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	if prog.active() {
 		prog.send(3, 3, "Done")
 	}
@@ -575,7 +608,7 @@ func (s *Server) handleFindLockViolation(ctx context.Context, req mcpsdk.CallToo
 	if prog.active() {
 		prog.send(2, 3, "Checking lock discipline...")
 	}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	if prog.active() {
 		prog.send(3, 3, "Done")
 	}
@@ -601,7 +634,7 @@ func (s *Server) handleFindNilDeref(ctx context.Context, req mcpsdk.CallToolRequ
 	}
 
 	tmpl := &templates.NilDeref{FuncPattern: funcPattern}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 
 	return s.findingsResult(findings), nil
 }
@@ -1076,7 +1109,7 @@ func (s *Server) handleFindGoroutineLeak(ctx context.Context, req mcpsdk.CallToo
 	defer release()
 
 	tmpl := &templates.GoroutineLeak{}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings), nil
 }
 
@@ -1091,7 +1124,7 @@ func (s *Server) handleFindSQLInjection(ctx context.Context, req mcpsdk.CallTool
 	defer release()
 
 	tmpl := &templates.SQLInjection{}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings), nil
 }
 
@@ -1106,7 +1139,7 @@ func (s *Server) handleFindRaceCondition(ctx context.Context, req mcpsdk.CallToo
 	defer release()
 
 	tmpl := &templates.RaceCondition{}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings), nil
 }
 
@@ -1123,7 +1156,7 @@ func (s *Server) handleFindContextMisuse(ctx context.Context, req mcpsdk.CallToo
 	defer release()
 
 	tmpl := &templates.ContextMisuse{FlagTodo: flagTodo}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings), nil
 }
 
@@ -1270,7 +1303,7 @@ func (s *Server) handleExplainFinding(ctx context.Context, req mcpsdk.CallToolRe
 	}
 
 	// Run the template and find findings matching the location.
-	allFindings := templates.RunTemplate(engine, tmpl)
+	allFindings := s.runTemplate(path, engine, tmpl)
 
 	var matched *templates.Finding
 	for i, f := range allFindings {
@@ -1417,7 +1450,7 @@ func (s *Server) handleFindSliceAppendRace(ctx context.Context, req mcpsdk.CallT
 	defer release()
 
 	tmpl := &templates.SliceAppendRace{}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings, req), nil
 }
 
@@ -1434,7 +1467,7 @@ func (s *Server) handleFindErrorSwallow(ctx context.Context, req mcpsdk.CallTool
 	tmpl := &templates.ErrorSwallow{
 		IncludeDropped: boolParam(req, "include_dropped"),
 	}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings, req), nil
 }
 
@@ -1449,7 +1482,7 @@ func (s *Server) handleFindDeferInLoop(ctx context.Context, req mcpsdk.CallToolR
 	defer release()
 
 	tmpl := &templates.DeferInLoop{}
-	findings := templates.RunTemplate(engine, tmpl)
+	findings := s.runTemplate(path, engine, tmpl)
 	return s.findingsResult(findings, req), nil
 }
 

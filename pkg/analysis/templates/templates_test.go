@@ -1,10 +1,12 @@
 package templates
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/trendvidia/caliper/pkg/analysis"
@@ -425,13 +427,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		DisableMethods: []string{"hash.Hash.Write"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if len(findingsOfKind(findings, "unchecked_error")) == 0 {
 		t.Error("expected finding when hash.Hash.Write is disabled — structural inheritance must respect the disable")
 	}
@@ -529,13 +529,11 @@ func writes() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		DisableWriters: []string{"os.Stderr"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 1 {
 		t.Errorf("expected 1 finding (os.Stderr disabled), got %d", got)
 	}
@@ -576,13 +574,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Methods: []string{"testpkg.Logger.Debug"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
 		t.Errorf("expected 0 findings (Logger.Debug is allowlisted), got %d", got)
 	}
@@ -606,13 +602,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Methods: []string{"testpkg.Logger.*"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
 		t.Errorf("expected 0 findings (Logger.* glob), got %d", got)
 	}
@@ -631,13 +625,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Functions: []string{"fmt.Errorf"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
 		t.Errorf("expected 0 findings (fmt.Errorf is user-allowlisted), got %d", got)
 	}
@@ -656,13 +648,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Functions: []string{"testpkg.Trace"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
 		t.Errorf("expected 0 findings (intra-package bare call to allowlisted Trace), got %d", got)
 	}
@@ -686,13 +676,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Writers: []string{"testpkg.NopWriter"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 0 {
 		t.Errorf("expected 0 findings (NopWriter is registered as infallible), got %d", got)
 	}
@@ -712,13 +700,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		DisableMethods: []string{"bytes.Buffer.Write"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 1 {
 		t.Errorf("expected 1 finding (disable_methods unmasks bytes.Buffer.Write), got %d", got)
 	}
@@ -738,13 +724,11 @@ func use() {
 }
 `
 	engine := setupProject(t, src)
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		DisableMethods: []string{"bytes.Buffer.Write*"},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
-
 	tmpl := &UncheckedError{}
-	findings := RunTemplate(engine, tmpl)
+	findings := RunTemplateWithConfig(engine, tmpl, infallibleState)
 	if got := len(findingsOfKind(findings, "unchecked_error")); got != 3 {
 		t.Errorf("expected 3 findings (disable glob unmasks Write/WriteByte/WriteString), got %d", got)
 	}
@@ -763,13 +747,12 @@ func TestUncheckedError_ConfigBadGlobDiagnostic(t *testing.T) {
 	os.Stderr = w
 	defer func() { os.Stderr = origStderr }()
 
-	ConfigureInfallible(&pb.Infallible{
+	infallibleState := NewInfallibleState(&pb.Infallible{
 		Methods: []string{
 			"testpkg.Logger.De?bug",     // '?' is not a supported wildcard
 			"testpkg.Logger.GoodMethod", // valid exact entry
 		},
 	})
-	t.Cleanup(func() { ConfigureInfallible(nil) })
 
 	w.Close()
 	out, _ := io.ReadAll(r)
@@ -782,8 +765,71 @@ func TestUncheckedError_ConfigBadGlobDiagnostic(t *testing.T) {
 		t.Errorf("expected diagnostic to quote the bad entry, got: %q", stderr)
 	}
 	// Valid entry must still match.
-	if !userInfallibleMethods.Match("testpkg.Logger.GoodMethod") {
+	if !infallibleState.matchUserMethod("testpkg.Logger.GoodMethod") {
 		t.Error("expected valid entry to remain registered after bad glob was skipped")
+	}
+}
+
+func TestUncheckedError_ConcurrentDifferentConfigs(t *testing.T) {
+	// Two analyses on distinct projects with distinct InfallibleStates
+	// must not see each other's allowlist. This is the regression
+	// guard for the package-level state race that motivated moving
+	// state onto TemplateContext. Run under -race for full effect.
+	srcA := `package testpkg
+
+type LoggerA struct{}
+
+func (LoggerA) Log(msg string) error { return nil }
+
+func use() {
+	var l LoggerA
+	l.Log("a")
+}
+`
+	srcB := `package testpkg
+
+type LoggerB struct{}
+
+func (LoggerB) Log(msg string) error { return nil }
+
+func use() {
+	var l LoggerB
+	l.Log("b")
+}
+`
+	engineA := setupProject(t, srcA)
+	engineB := setupProject(t, srcB)
+
+	// A allowlists LoggerA only; B allowlists LoggerB only. If state
+	// were package-global the second ConfigureInfallible would clobber
+	// the first and at least one analysis would see the wrong allowlist.
+	stateA := NewInfallibleState(&pb.Infallible{Methods: []string{"testpkg.LoggerA.Log"}})
+	stateB := NewInfallibleState(&pb.Infallible{Methods: []string{"testpkg.LoggerB.Log"}})
+
+	const iters = 20
+	errCh := make(chan error, 2*iters)
+	var wg sync.WaitGroup
+	for i := 0; i < iters; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			fs := RunTemplateWithConfig(engineA, &UncheckedError{}, stateA)
+			if got := len(findingsOfKind(fs, "unchecked_error")); got != 0 {
+				errCh <- fmt.Errorf("engineA: expected 0 findings (LoggerA allowlisted), got %d", got)
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			fs := RunTemplateWithConfig(engineB, &UncheckedError{}, stateB)
+			if got := len(findingsOfKind(fs, "unchecked_error")); got != 0 {
+				errCh <- fmt.Errorf("engineB: expected 0 findings (LoggerB allowlisted), got %d", got)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errCh)
+	for err := range errCh {
+		t.Error(err)
 	}
 }
 

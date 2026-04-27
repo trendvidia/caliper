@@ -68,7 +68,7 @@ func (ue *UncheckedError) checkAssign(ctx *TemplateContext, _ *cfg.Block, assign
 		return nil
 	}
 
-	if isInfallibleErrorReturn(call, ctx.Func.Info) {
+	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible) {
 		return nil
 	}
 
@@ -123,7 +123,7 @@ func (ue *UncheckedError) checkExprStmt(ctx *TemplateContext, _ *cfg.Block, expr
 		return nil
 	}
 
-	if isInfallibleErrorReturn(call, ctx.Func.Info) {
+	if isInfallibleErrorReturn(call, ctx.Func.Info, ctx.Infallible) {
 		return nil
 	}
 

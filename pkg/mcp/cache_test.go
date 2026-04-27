@@ -23,7 +23,7 @@ func TestEngineCache_PutAndGet(t *testing.T) {
 	}
 
 	// Insert a mock engine (use nil since we just test the cache structure).
-	c.put("/foo", (*analysis.Engine)(nil))
+	c.put("/foo", (*analysis.Engine)(nil), nil)
 
 	if c.size() != 1 {
 		t.Errorf("expected size 1, got %d", c.size())
@@ -42,7 +42,7 @@ func TestEngineCache_PutAndGet(t *testing.T) {
 
 func TestEngineCache_SubPathMatch(t *testing.T) {
 	c := newEngineCache(4)
-	c.put("/project/root", (*analysis.Engine)(nil))
+	c.put("/project/root", (*analysis.Engine)(nil), nil)
 
 	// Sub-path should hit the parent entry.
 	c.get("/project/root/pkg/foo")
@@ -62,14 +62,14 @@ func TestEngineCache_SubPathMatch(t *testing.T) {
 func TestEngineCache_LRUEviction(t *testing.T) {
 	c := newEngineCache(2)
 
-	c.put("/a", (*analysis.Engine)(nil))
-	c.put("/b", (*analysis.Engine)(nil))
+	c.put("/a", (*analysis.Engine)(nil), nil)
+	c.put("/b", (*analysis.Engine)(nil), nil)
 	if c.size() != 2 {
 		t.Fatalf("expected size 2, got %d", c.size())
 	}
 
 	// Adding a third should evict /a (LRU).
-	c.put("/c", (*analysis.Engine)(nil))
+	c.put("/c", (*analysis.Engine)(nil), nil)
 	if c.size() != 2 {
 		t.Errorf("expected size 2 after eviction, got %d", c.size())
 	}
@@ -85,14 +85,14 @@ func TestEngineCache_LRUEviction(t *testing.T) {
 func TestEngineCache_LRUAccess(t *testing.T) {
 	c := newEngineCache(2)
 
-	c.put("/a", (*analysis.Engine)(nil))
-	c.put("/b", (*analysis.Engine)(nil))
+	c.put("/a", (*analysis.Engine)(nil), nil)
+	c.put("/b", (*analysis.Engine)(nil), nil)
 
 	// Access /a to make it most recently used.
 	c.get("/a")
 
 	// Now adding /c should evict /b (the LRU), not /a.
-	c.put("/c", (*analysis.Engine)(nil))
+	c.put("/c", (*analysis.Engine)(nil), nil)
 
 	// /a should still be cached (hit).
 	c.get("/a")
@@ -104,7 +104,7 @@ func TestEngineCache_LRUAccess(t *testing.T) {
 
 func TestEngineCache_Invalidate(t *testing.T) {
 	c := newEngineCache(4)
-	c.put("/foo", (*analysis.Engine)(nil))
+	c.put("/foo", (*analysis.Engine)(nil), nil)
 
 	c.invalidate("/foo")
 
@@ -165,7 +165,7 @@ func TestEngineCache_LockReusesParentMutex(t *testing.T) {
 	// Sub-path requests must share the parent path's lock so that loads
 	// of /foo and /foo/bar serialize against the same engine creation.
 	c := newEngineCache(4)
-	c.put("/foo", (*analysis.Engine)(nil))
+	c.put("/foo", (*analysis.Engine)(nil), nil)
 
 	const goroutines = 8
 	var (
