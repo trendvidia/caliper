@@ -596,19 +596,24 @@ func isChanType(t types.Type) bool {
 
 // identWrittenInNode checks if a variable is assigned to (written) in any
 // part of an AST subtree. Covers direct assignment (x = ...), field
-// assignment (x.field = ...), and index assignment (x[key] = ...).
+// assignment (x.field = ...), index assignment (x[key] = ...), and
+// inc/dec statements (x++, x--, x.field++, x[i]++).
 func identWrittenInNode(node ast.Node, name string) bool {
 	found := false
 	ast.Inspect(node, func(n ast.Node) bool {
 		if found {
 			return false
 		}
-		assign, ok := n.(*ast.AssignStmt)
-		if !ok {
-			return true
-		}
-		for _, lhs := range assign.Lhs {
-			if lhsReferencesVar(lhs, name) {
+		switch s := n.(type) {
+		case *ast.AssignStmt:
+			for _, lhs := range s.Lhs {
+				if lhsReferencesVar(lhs, name) {
+					found = true
+					return false
+				}
+			}
+		case *ast.IncDecStmt:
+			if lhsReferencesVar(s.X, name) {
 				found = true
 				return false
 			}
@@ -633,7 +638,7 @@ func lhsReferencesVar(expr ast.Expr, name string) bool {
 }
 
 // identWrittenInStmts checks if a variable is assigned to (written) in any
-// of the given statements.
+// of the given statements. Recognizes both AssignStmt and IncDecStmt.
 func identWrittenInStmts(stmts []ast.Stmt, name string) bool {
 	for _, stmt := range stmts {
 		found := false
@@ -641,12 +646,16 @@ func identWrittenInStmts(stmts []ast.Stmt, name string) bool {
 			if found {
 				return false
 			}
-			assign, ok := n.(*ast.AssignStmt)
-			if !ok {
-				return true
-			}
-			for _, lhs := range assign.Lhs {
-				if ident, ok := lhs.(*ast.Ident); ok && ident.Name == name {
+			switch s := n.(type) {
+			case *ast.AssignStmt:
+				for _, lhs := range s.Lhs {
+					if ident, ok := lhs.(*ast.Ident); ok && ident.Name == name {
+						found = true
+						return false
+					}
+				}
+			case *ast.IncDecStmt:
+				if ident, ok := s.X.(*ast.Ident); ok && ident.Name == name {
 					found = true
 					return false
 				}

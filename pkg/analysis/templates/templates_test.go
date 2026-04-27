@@ -2198,6 +2198,31 @@ func loopRace() {
 	}
 }
 
+func TestRaceCondition_IncDecCountedAsWrite(t *testing.T) {
+	// Regression: identWrittenInNode/identWrittenInStmts used to only
+	// recognize *ast.AssignStmt as a write, missing the very common
+	// `count++` mutation pattern. A captured counter that's mutated
+	// from both the goroutine and the enclosing function should be
+	// flagged as a race.
+	src := `package testpkg
+
+func loopRace() {
+	count := 0
+	go func() {
+		count++
+	}()
+	count++
+	_ = count
+}
+`
+	engine := setupProject(t, src)
+	tmpl := &RaceCondition{}
+	findings := RunTemplate(engine, tmpl)
+	if len(findingsOfKind(findings, "race_condition")) == 0 {
+		t.Error("expected race finding for count++ in goroutine + main")
+	}
+}
+
 func TestRaceCondition_NonLoopVarStillRacy_Post122(t *testing.T) {
 	// Per-iteration loop scoping doesn't change the race story for
 	// non-loop variables. A shared counter mutated by both goroutine
