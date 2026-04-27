@@ -46,8 +46,12 @@ type Server struct {
 }
 
 // NewServer creates and configures the MCP server with all tools.
-// It loads .caliper.yaml from the current working directory (or parents).
-func NewServer() (*Server, error) {
+// It loads .caliper.pxf from the current working directory (or parents).
+//
+// version is the release identifier exposed in the MCP initialize
+// handshake. The caller (cmd/caliper-mcp) typically passes a value set
+// at build time via -ldflags or derived from runtime/debug.BuildInfo.
+func NewServer(version string) (*Server, error) {
 	cfg, err := config.Load(".")
 	if err != nil {
 		return nil, fmt.Errorf("loading config: %w", err)
@@ -56,6 +60,10 @@ func NewServer() (*Server, error) {
 	cacheSize := defaultMaxCacheEntries
 	if cfg.MaxCacheEntries() > 0 {
 		cacheSize = cfg.MaxCacheEntries()
+	}
+
+	if version == "" {
+		version = "dev"
 	}
 
 	s := &Server{
@@ -67,7 +75,7 @@ func NewServer() (*Server, error) {
 
 	s.mcp = mcpserver.NewMCPServer(
 		"Caliper",
-		"0.1.0",
+		version,
 		mcpserver.WithToolCapabilities(true),
 	)
 

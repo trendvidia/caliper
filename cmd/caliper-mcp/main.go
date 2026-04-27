@@ -20,6 +20,48 @@ import (
 	"github.com/trendvidia/caliper/pkg/mcp"
 )
 
+// Version is the release identifier reported in the MCP initialize
+// handshake. Set at build time via:
+//
+//	go build -ldflags "-X main.Version=v1.2.3" ./cmd/caliper-mcp
+//
+// When unset, resolveVersion() falls back to the VCS revision and
+// dirty-tree status embedded by the Go toolchain.
+var Version = ""
+
+// resolveVersion returns the Version override if set, otherwise derives
+// a version string from runtime/debug.BuildInfo (e.g., "dev-1a2b3c4"
+// or "dev-1a2b3c4-dirty"). Falls back to "dev" if no VCS metadata is
+// embedded (go run, go install with no VCS, etc.).
+func resolveVersion() string {
+	if Version != "" {
+		return Version
+	}
+	info, ok := debug.ReadBuildInfo()
+	if !ok {
+		return "dev"
+	}
+	var rev, dirty string
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if len(s.Value) >= 7 {
+				rev = s.Value[:7]
+			} else {
+				rev = s.Value
+			}
+		case "vcs.modified":
+			if s.Value == "true" {
+				dirty = "-dirty"
+			}
+		}
+	}
+	if rev == "" {
+		return "dev"
+	}
+	return "dev-" + rev + dirty
+}
+
 func main() {
 	// Tee stderr to a logfile so disconnect causes (panics, signals,
 	// transport errors) survive across MCP reconnects. The logfile is
@@ -49,13 +91,15 @@ func main() {
 		os.Interrupt, syscall.SIGTERM, syscall.SIGHUP, syscall.SIGPIPE)
 	defer cancel()
 
-	srv, err := mcp.NewServer()
+	version := resolveVersion()
+
+	srv, err := mcp.NewServer(version)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "caliper: %v\n", err)
 		os.Exit(1)
 	}
 
-	fmt.Fprintf(os.Stderr, "caliper: server starting (pid %d)\n", os.Getpid())
+	fmt.Fprintf(os.Stderr, "caliper: server starting %s (pid %d)\n", version, os.Getpid())
 
 	if err := srv.Run(ctx); err != nil {
 		fmt.Fprintf(os.Stderr, "caliper: server.Run returned: %v\n", err)

@@ -79,7 +79,7 @@ func example(c io.Closer) {
 `,
 	})
 
-	srv, err := NewServer()
+	srv, err := NewServer("test")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +112,7 @@ func example() {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"pattern": "$x.FooBar()",
 		"path":    dir,
@@ -147,7 +147,7 @@ func use() {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"type_name": "Config",
 		"path":      dir,
@@ -182,7 +182,7 @@ func leaky() {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"acquire_pattern": "$f, $_ := os.Open($path)",
 		"release_method":  "Close",
@@ -218,7 +218,7 @@ func bad() {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"path": dir,
 	})
@@ -252,7 +252,7 @@ func noUnlock() {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"path": dir,
 	})
@@ -285,7 +285,7 @@ func example(c io.Closer) {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"match":   "$x.Close()",
 		"replace": "$x.Release()",
@@ -319,7 +319,7 @@ func example(c io.Closer) {
 // --------------------------------------------------------------------------
 
 func TestMCP_ListEquivalences(t *testing.T) {
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"category": "all",
 	})
@@ -353,7 +353,7 @@ func doWork()   {}
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"from_pattern":   "doWork()",
 		"target_pattern": "validate()",
@@ -379,7 +379,7 @@ func doWork()   {}
 // --------------------------------------------------------------------------
 
 func TestMCP_InvalidPattern(t *testing.T) {
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"pattern": "$",
 		"path":    ".",
@@ -411,7 +411,7 @@ func example(c io.Closer) {
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 	req := makeRequest(map[string]any{
 		"pattern": "$x.Close()",
 		"path":    dir,
@@ -485,7 +485,7 @@ func hello() string { return "hi" }
 `,
 	})
 
-	srv, _ := NewServer()
+	srv, _ := NewServer("test")
 
 	// Populate cache.
 	req := makeRequest(map[string]any{
