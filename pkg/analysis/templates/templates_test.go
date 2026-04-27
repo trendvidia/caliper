@@ -1,6 +1,8 @@
 package templates
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"os"
@@ -13,8 +15,24 @@ import (
 	pb "github.com/trendvidia/caliper/pkg/caliperpb"
 )
 
+// fixtureCache memoizes loaded engines by (source, goVersion) hash so
+// many tests that share identical fixture source don't each pay the full
+// analysis.NewEngine cost (~250ms per call: go list + parse + type-check).
+//
+// Engines are read-only post-load and the test suite does not run in
+// parallel, so concurrent access doesn't apply here. The map and the
+// shared tempdirs leak until process exit — fine for a test process.
+var (
+	fixtureMu      sync.Mutex
+	fixtureEngines = map[string]*analysis.Engine{}
+)
+
 // setupProject creates a temp Go project with the given source file and
 // returns an analysis.Engine loaded from it. Defaults to go 1.23.
+//
+// Identical (src, goVersion) pairs share a single engine across tests —
+// the suite's hot path is "many tests, same source, varying assertion".
+// Don't mutate engine state from tests; rely on Findings being stateless.
 func setupProject(t *testing.T, src string) *analysis.Engine {
 	return setupProjectWithGoVersion(t, src, "1.23")
 }
@@ -25,7 +43,22 @@ func setupProject(t *testing.T, src string) *analysis.Engine {
 func setupProjectWithGoVersion(t *testing.T, src, goVersion string) *analysis.Engine {
 	t.Helper()
 
-	dir := t.TempDir()
+	h := sha256.Sum256([]byte(goVersion + "\x00" + src))
+	key := hex.EncodeToString(h[:])
+
+	fixtureMu.Lock()
+	eng, ok := fixtureEngines[key]
+	fixtureMu.Unlock()
+	if ok {
+		return eng
+	}
+
+	// Use os.MkdirTemp (not t.TempDir) so the fixture survives the
+	// originating test's cleanup and can be reused by later tests.
+	dir, err := os.MkdirTemp("", "caliper-fixture-*")
+	if err != nil {
+		t.Fatal(err)
+	}
 	goMod := "module testpkg\n\ngo " + goVersion + "\n"
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte(goMod), 0o644); err != nil {
 		t.Fatal(err)
@@ -34,11 +67,15 @@ func setupProjectWithGoVersion(t *testing.T, src, goVersion string) *analysis.En
 		t.Fatal(err)
 	}
 
-	engine, err := analysis.NewEngine(dir)
+	eng, err = analysis.NewEngine(dir)
 	if err != nil {
 		t.Fatalf("NewEngine: %v", err)
 	}
-	return engine
+
+	fixtureMu.Lock()
+	fixtureEngines[key] = eng
+	fixtureMu.Unlock()
+	return eng
 }
 
 // findingsOfKind filters findings by kind.
