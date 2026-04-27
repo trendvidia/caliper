@@ -197,19 +197,3 @@ func appendInLockedBlock(body *ast.BlockStmt, pos token.Pos) bool {
 	return deferredUnlock
 }
 
-// findInnermostBlock returns the deepest *ast.BlockStmt under root that
-// lexically contains pos.
-func findInnermostBlock(root ast.Node, pos token.Pos) *ast.BlockStmt {
-	var found *ast.BlockStmt
-	ast.Inspect(root, func(n ast.Node) bool {
-		block, ok := n.(*ast.BlockStmt)
-		if !ok {
-			return true
-		}
-		if block.Pos() <= pos && pos <= block.End() {
-			found = block
-		}
-		return true
-	})
-	return found
-}
