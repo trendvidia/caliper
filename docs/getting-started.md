@@ -370,6 +370,11 @@ analysis path changes (mtime or size). To clear it manually:
 rm -rf "${TMPDIR}/caliper-cache"
 ```
 
+The cache directory is capped at 100 MB by default; older entries
+(by file mtime) are evicted in the background after each new write.
+Override the cap via the `CALIPER_CACHE_MAX_BYTES` env var (set to
+`0` to disable eviction entirely).
+
 Mutation tools (`apply_transform`, `migrate_api`, `add_missing_cleanup`)
 bypass the cache entirely.
 

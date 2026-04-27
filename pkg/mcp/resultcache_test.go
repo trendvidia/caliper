@@ -122,6 +122,63 @@ func TestResultCache_KeyVariesByArgs(t *testing.T) {
 	}
 }
 
+func TestResultCache_EvictionRespectsMaxBytes(t *testing.T) {
+	dir := t.TempDir()
+
+	// Pre-populate three large files with stale mtimes ascending,
+	// then a fresh small file. Set maxBytes well below the total —
+	// the older large files should be the ones evicted.
+	c := &resultCache{dir: dir, maxBytes: 200, fpCache: map[string]string{}}
+
+	mkfile := func(name string, size int, ageHrs int) string {
+		p := filepath.Join(dir, name+".json")
+		buf := make([]byte, size)
+		if err := os.WriteFile(p, buf, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		mtime := time.Now().Add(-time.Duration(ageHrs) * time.Hour)
+		if err := os.Chtimes(p, mtime, mtime); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	old1 := mkfile("old1", 100, 3) // oldest
+	old2 := mkfile("old2", 100, 2)
+	old3 := mkfile("old3", 100, 1)
+	fresh := mkfile("fresh", 50, 0)
+
+	c.evict()
+
+	// Total was 350 bytes; budget 200. Should evict old1 (100) and
+	// old2 (100), leaving old3 (100) + fresh (50) = 150.
+	for _, p := range []string{old1, old2} {
+		if _, err := os.Stat(p); !os.IsNotExist(err) {
+			t.Errorf("expected %s to be evicted, still exists (err=%v)", filepath.Base(p), err)
+		}
+	}
+	for _, p := range []string{old3, fresh} {
+		if _, err := os.Stat(p); err != nil {
+			t.Errorf("expected %s to survive, got err=%v", filepath.Base(p), err)
+		}
+	}
+}
+
+func TestResultCache_NoEvictionWhenUnderBudget(t *testing.T) {
+	dir := t.TempDir()
+	c := &resultCache{dir: dir, maxBytes: 1 << 20, fpCache: map[string]string{}}
+
+	want := &mcpsdk.CallToolResult{
+		Content: []mcpsdk.Content{mcpsdk.TextContent{Type: "text", Text: "x"}},
+	}
+	c.Put("k1", want)
+	// evict synchronously to avoid race with the goroutine; it's a no-op.
+	c.evict()
+
+	if got := c.Get("k1"); got == nil {
+		t.Error("entry must survive when total is under maxBytes")
+	}
+}
+
 func TestResultCache_KeyVariesByTool(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "a.go"), []byte("package x\n"), 0o644); err != nil {

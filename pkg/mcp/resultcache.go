@@ -9,11 +9,18 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
 )
+
+// defaultCacheMaxBytes caps disk usage for $TMPDIR/caliper-cache/.
+// Override via env var CALIPER_CACHE_MAX_BYTES (set to 0 to disable
+// eviction entirely).
+const defaultCacheMaxBytes int64 = 100 * 1024 * 1024 // 100 MB
 
 // resultCache persists tool-call results to disk, keyed on a hash of
 // (tool name, analysis path, arguments, source-file fingerprint). The
@@ -30,21 +37,34 @@ import (
 // answers instead of paying the multi-second packages.Load cost
 // every time the client tears down stdio.
 type resultCache struct {
-	dir string
+	dir      string
+	maxBytes int64 // 0 = no eviction
 
 	// fpCache memoizes fingerprints within one process so a fan-out
 	// of N tool calls on the same path walks the source tree once.
 	mu      sync.Mutex
 	fpCache map[string]string // absPath → fingerprint
+
+	// evicting ensures only one background eviction runs at a time —
+	// repeated rapid Puts don't spawn parallel scanners of the cache
+	// dir. Set to 1 while a goroutine is running, 0 otherwise.
+	evicting atomic.Int32
 }
 
 func newResultCache(dir string) *resultCache {
 	if dir == "" {
 		dir = filepath.Join(os.TempDir(), "caliper-cache")
 	}
+	maxBytes := defaultCacheMaxBytes
+	if v := os.Getenv("CALIPER_CACHE_MAX_BYTES"); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil && n >= 0 {
+			maxBytes = n
+		}
+	}
 	return &resultCache{
-		dir:     dir,
-		fpCache: map[string]string{},
+		dir:      dir,
+		maxBytes: maxBytes,
+		fpCache:  map[string]string{},
 	}
 }
 
@@ -145,6 +165,9 @@ func (c *resultCache) Get(key string) *mcpsdk.CallToolResult {
 
 // Put stores result under key. Errors are swallowed — the cache is
 // best-effort and a write failure shouldn't surface to the user.
+//
+// After a successful write, kicks off a fire-and-forget eviction
+// pass if maxBytes is set and another eviction isn't already running.
 func (c *resultCache) Put(key string, result *mcpsdk.CallToolResult) {
 	if key == "" || result == nil {
 		return
@@ -156,7 +179,57 @@ func (c *resultCache) Put(key string, result *mcpsdk.CallToolResult) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(c.path(key), data, 0o644)
+	if err := os.WriteFile(c.path(key), data, 0o644); err != nil {
+		return
+	}
+	if c.maxBytes > 0 && c.evicting.CompareAndSwap(0, 1) {
+		go func() {
+			defer c.evicting.Store(0)
+			c.evict()
+		}()
+	}
+}
+
+// evict deletes the oldest entries (by mtime) until the directory
+// total falls below maxBytes. Best-effort: errors during scan or
+// removal are silently ignored.
+func (c *resultCache) evict() {
+	type entry struct {
+		path string
+		size int64
+		mod  int64
+	}
+	var entries []entry
+	var total int64
+
+	_ = filepath.WalkDir(c.dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		info, err := d.Info()
+		if err != nil {
+			return nil
+		}
+		entries = append(entries, entry{path: p, size: info.Size(), mod: info.ModTime().UnixNano()})
+		total += info.Size()
+		return nil
+	})
+
+	if total <= c.maxBytes {
+		return
+	}
+
+	// Oldest first.
+	sort.Slice(entries, func(i, j int) bool { return entries[i].mod < entries[j].mod })
+
+	for _, e := range entries {
+		if total <= c.maxBytes {
+			break
+		}
+		if err := os.Remove(e.path); err == nil {
+			total -= e.size
+		}
+	}
 }
 
 func (c *resultCache) path(key string) string {
