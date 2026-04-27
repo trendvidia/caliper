@@ -40,7 +40,11 @@ TYPE CONSTRAINTS (optional):
 
 USE THIS TOOL WHEN: you want to find specific code patterns, API usages,
 or structural idioms across a codebase. For control-flow properties
-(resource leaks, missing error checks), use the specialized tools instead.`,
+(resource leaks, missing error checks), use the specialized tools instead.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -82,7 +86,11 @@ type is instantiated, passed as an argument, returned, stored in a field, or
 used in a type assertion/switch.
 
 USE THIS TOOL WHEN: you want to understand how a type is used before
-refactoring it, or to find all places affected by a type change.`,
+refactoring it, or to find all places affected by a type change.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -133,7 +141,11 @@ HOW IT WORKS INTERNALLY (you don't need to specify this):
 
 USE THIS TOOL WHEN: you suspect resource leaks, or before/after refactoring
 code that handles resources. Also useful for reviewing new code that opens
-files, connections, or locks.`,
+files, connections, or locks.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -144,7 +156,11 @@ Examples:
   "os.Open($path)"          — matches os.Open
   "os.OpenFile($args...)"   — matches os.OpenFile
   "$db.Query($args...)"     — matches Query on any *sql.DB
-  "$mu.Lock()"              — matches Lock on any sync.Mutex/RWMutex`,
+  "$mu.Lock()"              — matches Lock on any sync.Mutex/RWMutex
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 			},
 			"release_method": map[string]any{
 				"type":        "string",
@@ -179,7 +195,11 @@ WHAT IT CATCHES:
   - Errors in defer statements:    "defer f.Close()" (common, configurable)
 
 USE THIS TOOL WHEN: auditing error handling, reviewing new code, or
-enforcing a "no ignored errors" policy.`,
+enforcing a "no ignored errors" policy.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -218,7 +238,11 @@ WHAT IT CATCHES:
   - RLock/RUnlock mixed with Lock/Unlock on the same mutex
 
 USE THIS TOOL WHEN: reviewing concurrent code, investigating deadlocks,
-or auditing mutex usage.`,
+or auditing mutex usage.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -248,7 +272,11 @@ WHAT IT CATCHES:
   - Dereferencing a pointer that was checked for nil on one path but not another
 
 USE THIS TOOL WHEN: reviewing code that handles pointers, map lookups,
-or type assertions.`,
+or type assertions.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -292,7 +320,11 @@ EXAMPLES:
     target_pattern: "if $err != nil"
 
 USE THIS TOOL WHEN: you need to verify an ordering or reachability property
-between two code points that isn't covered by the specialized tools.`,
+between two code points that isn't covered by the specialized tools.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -312,7 +344,11 @@ between two code points that isn't covered by the specialized tools.`,
   "always_after"   — target must always follow from_pattern
   "never_between"  — exclude_pattern must never appear between from and target
   "exists_between" — exclude_pattern must appear at least once between from and target
-  "dominates"      — from_pattern must dominate target_pattern`,
+  "dominates"      — from_pattern must dominate target_pattern
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 			},
 			"exclude_pattern": map[string]any{
 				"type":        "string",
@@ -581,7 +617,11 @@ WHAT IT CATCHES:
   - Goroutines started without any termination signal
 
 USE THIS TOOL WHEN: reviewing concurrent code, investigating memory leaks,
-or auditing goroutine lifecycle management.`,
+or auditing goroutine lifecycle management.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -610,7 +650,11 @@ WHAT IS SAFE:
   - db.Query("SELECT 1")     (string literal)
 
 USE THIS TOOL WHEN: auditing code for SQL injection vulnerabilities,
-reviewing database access patterns, or checking user input handling.`,
+reviewing database access patterns, or checking user input handling.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -641,7 +685,11 @@ This performs static analysis — for runtime detection, use 'go test -race'.
 Static analysis can find races that tests don't cover.
 
 USE THIS TOOL WHEN: reviewing concurrent code, investigating intermittent
-bugs, or auditing goroutine safety.`,
+bugs, or auditing goroutine safety.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -670,7 +718,11 @@ WHY THIS MATTERS:
   won't propagate. This causes goroutine leaks and timeout violations.
 
 USE THIS TOOL WHEN: reviewing context usage patterns, investigating
-timeout or cancellation issues, or enforcing context propagation rules.`,
+timeout or cancellation issues, or enforcing context propagation rules.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -709,7 +761,11 @@ EXAMPLES:
     sink_function: "os/exec.Command"
 
 USE THIS TOOL WHEN: doing security audits, checking for injection
-vulnerabilities, or tracing untrusted data flow.`,
+vulnerabilities, or tracing untrusted data flow.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -748,7 +804,11 @@ EXAMPLES:
     function_pattern: "processRequest($args...)"
 
 USE THIS TOOL WHEN: understanding how a function is used, preparing for
-refactoring, or auditing call patterns.`,
+refactoring, or auditing call patterns.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -862,7 +922,11 @@ EXAMPLES:
 
 USE THIS TOOL WHEN: verifying interface contracts after refactoring,
 checking if a type implements a framework interface, or auditing
-interface compliance across a codebase.`,
+interface compliance across a codebase.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -902,7 +966,11 @@ WHAT IS SAFE:
   - Append protected by a mutex
 
 USE THIS TOOL WHEN: reviewing concurrent code that collects results
-from goroutines, or investigating intermittent data corruption.`,
+from goroutines, or investigating intermittent data corruption.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -940,7 +1008,11 @@ OPTIONAL (with include_dropped=true):
 USE THIS TOOL WHEN: auditing error handling, reviewing new code, or
 enforcing "no ignored errors" policies.
 
-Respects .caliper.pxf walking up from the analysis path.`,
+Respects .caliper.pxf walking up from the analysis path.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
@@ -975,7 +1047,11 @@ WHAT IS SAFE:
   - defer in a helper function called from a loop
 
 USE THIS TOOL WHEN: reviewing code that processes multiple resources in a
-loop, or investigating resource exhaustion issues.`,
+loop, or investigating resource exhaustion issues.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
 	InputSchema: mcpsdk.ToolInputSchema{
 		Type: "object",
 		Properties: map[string]any{
