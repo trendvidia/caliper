@@ -4,7 +4,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/trendvidia/protowire/encoding/pxf"
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	pb "github.com/trendvidia/caliper/pkg/caliperpb"
 )

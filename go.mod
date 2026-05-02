@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/mark3labs/mcp-go v0.28.0
-	github.com/trendvidia/protowire v1.0.1
+	github.com/trendvidia/protowire-go v0.0.0-00010101000000-000000000000
 	golang.org/x/tools v0.29.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -21,3 +21,5 @@ require (
 // Use the trendvidia fork until panic-recovery and other patches are
 // upstreamed. Layout: ../mcp-go alongside this repo.
 replace github.com/mark3labs/mcp-go => ../mcp-go
+
+replace github.com/trendvidia/protowire-go => ../protowire-go

@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"github.com/trendvidia/protowire/encoding/pxf"
+	"github.com/trendvidia/protowire-go/encoding/pxf"
 
 	"github.com/trendvidia/caliper/pkg/analysis/patterns"
 	pb "github.com/trendvidia/caliper/pkg/caliperpb"
