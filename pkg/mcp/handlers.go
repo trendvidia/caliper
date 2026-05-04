@@ -1122,34 +1122,11 @@ func (s *Server) handleExplainFinding(ctx context.Context, req mcpsdk.CallToolRe
 	return jsonResult(result), nil
 }
 
+// templateForKind delegates to templates.ByKind. Kept as a method
+// because handle_explain_trace's call site reads better with a
+// receiver-bound name; the body is now trivial.
 func (s *Server) templateForKind(kind string) templates.Template {
-	switch kind {
-	case "nil_deref":
-		return &templates.NilDeref{}
-	case "resource_leak":
-		return nil // needs acquire/release params, handled separately
-	case "unchecked_error":
-		return &templates.UncheckedError{}
-	case "lock_violation":
-		return &templates.LockViolation{CheckBlockingUnderLock: true}
-	case "blocking_under_lock":
-		return &templates.LockViolation{CheckBlockingUnderLock: true}
-	case "goroutine_leak":
-		return &templates.GoroutineLeak{}
-	case "race_condition":
-		return &templates.RaceCondition{}
-	case "context_misuse":
-		return &templates.ContextMisuse{FlagTodo: true}
-	case "defer_in_loop":
-		return &templates.DeferInLoop{}
-	case "error_swallow":
-		return &templates.UncheckedError{Strict: true, KindName: "error_swallow"}
-	case "slice_append_race":
-		return &templates.SliceAppendRace{}
-	case "sql_injection":
-		return &templates.SQLInjection{}
-	}
-	return nil
+	return templates.ByKind(kind)
 }
 
 func (s *Server) handleCheckInterface(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {

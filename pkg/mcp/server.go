@@ -23,6 +23,9 @@ type Server struct {
 	cache   *engineCache
 	results *resultCache
 	cfg     *config.Config
+	// version is the release identifier passed to NewServer. Stamped
+	// into SARIF output so consumers can pin findings to a build.
+	version string
 }
 
 // NewServer creates and configures the MCP server with all tools.
@@ -51,6 +54,7 @@ func NewServer(version string) (*Server, error) {
 		cache:   newEngineCache(cacheSize),
 		results: newResultCache(""), // default $TMPDIR/caliper-cache
 		cfg:     cfg,
+		version: version,
 	}
 
 	s.mcp = mcpserver.NewMCPServer(
