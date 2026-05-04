@@ -161,78 +161,18 @@ func (s *Server) findingsGrouped(findings []templates.Finding) *mcpsdk.CallToolR
 }
 
 func (s *Server) findingsSARIF(findings []templates.Finding) *mcpsdk.CallToolResult {
-	// Build SARIF v2.1.0 output for GitHub Code Scanning.
-	// https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html
-
-	// Collect unique rule IDs.
-	ruleMap := map[string]int{}
-	var rules []map[string]any
-	for _, f := range findings {
-		if _, ok := ruleMap[f.Kind]; !ok {
-			ruleMap[f.Kind] = len(rules)
-			rule := map[string]any{
-				"id": f.Kind,
-				"shortDescription": map[string]any{
-					"text": f.Kind,
-				},
-			}
-			rules = append(rules, rule)
-		}
+	// SARIF rendering moved to templates.RenderSARIF so cmd/caliper-analyze
+	// can share it. We marshal-then-unmarshal here because jsonResult
+	// expects a Go value, not pre-encoded bytes.
+	raw, err := templates.RenderSARIF(findings, s.version)
+	if err != nil {
+		return errorResult("render sarif: %v", err)
 	}
-
-	sevMap := map[string]string{
-		"error":   "error",
-		"warning": "warning",
-		"info":    "note",
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return errorResult("decode rendered sarif: %v", err)
 	}
-
-	var results []map[string]any
-	for _, f := range findings {
-		level := sevMap[f.Severity]
-		if level == "" {
-			level = "warning"
-		}
-
-		result := map[string]any{
-			"ruleId":  f.Kind,
-			"level":   level,
-			"message": map[string]any{"text": f.Message},
-			"locations": []map[string]any{{
-				"physicalLocation": map[string]any{
-					"artifactLocation": map[string]any{
-						"uri": f.Location.File,
-					},
-					"region": map[string]any{
-						"startLine":   f.Location.Line,
-						"startColumn": f.Location.Column,
-					},
-				},
-			}},
-		}
-		if f.Suggestion != "" {
-			result["fixes"] = []map[string]any{{
-				"description": map[string]any{"text": f.Suggestion},
-			}}
-		}
-		results = append(results, result)
-	}
-
-	sarif := map[string]any{
-		"version": "2.1.0",
-		"$schema": "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/main/sarif-2.1/schema/sarif-schema-2.1.0.json",
-		"runs": []map[string]any{{
-			"tool": map[string]any{
-				"driver": map[string]any{
-					"name":    "Caliper",
-					"version": "1.0.6",
-					"rules":   rules,
-				},
-			},
-			"results": results,
-		}},
-	}
-
-	return jsonResult(sarif)
+	return jsonResult(v)
 }
 
 func (s *Server) findingsCompact(findings []templates.Finding) *mcpsdk.CallToolResult {

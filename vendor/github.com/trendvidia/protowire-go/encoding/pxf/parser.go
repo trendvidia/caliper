@@ -142,7 +142,10 @@ func (p *parser) parseValue() (Value, error) {
 	case BYTES:
 		decoded, err := base64.StdEncoding.DecodeString(p.current.Value)
 		if err != nil {
-			decoded, _ = base64.RawStdEncoding.DecodeString(p.current.Value)
+			decoded, err = base64.RawStdEncoding.DecodeString(p.current.Value)
+			if err != nil {
+				return nil, errorf(pos, "invalid base64: %v", err)
+			}
 		}
 		v := &BytesVal{Pos: pos, Value: decoded}
 		p.advance()
@@ -151,14 +154,20 @@ func (p *parser) parseValue() (Value, error) {
 	case TIMESTAMP:
 		t, err := time.Parse(time.RFC3339Nano, p.current.Value)
 		if err != nil {
-			t, _ = time.Parse(time.RFC3339, p.current.Value)
+			t, err = time.Parse(time.RFC3339, p.current.Value)
+			if err != nil {
+				return nil, errorf(pos, "invalid timestamp %q: %v", p.current.Value, err)
+			}
 		}
 		v := &TimestampVal{Pos: pos, Value: t, Raw: p.current.Value}
 		p.advance()
 		return v, nil
 
 	case DURATION:
-		d, _ := time.ParseDuration(p.current.Value)
+		d, err := time.ParseDuration(p.current.Value)
+		if err != nil {
+			return nil, errorf(pos, "invalid duration %q: %v", p.current.Value, err)
+		}
 		v := &DurationVal{Pos: pos, Value: d, Raw: p.current.Value}
 		p.advance()
 		return v, nil

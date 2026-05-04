@@ -23,3 +23,8 @@ require (
 replace github.com/mark3labs/mcp-go => ../mcp-go
 
 replace github.com/trendvidia/protowire-go => ../protowire-go
+
+// protowire-go uses dynamicpb.Message.SetUnsafe (a fork-only fast-path).
+// Pull in the same protobuf-go fork it builds against; keeps the
+// vendored copy compilable here.
+replace google.golang.org/protobuf => ../protobuf-go

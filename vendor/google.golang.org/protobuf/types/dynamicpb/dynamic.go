@@ -271,6 +271,37 @@ func (m *Message) Set(fd protoreflect.FieldDescriptor, v protoreflect.Value) {
 	m.known[fd.Number()] = v
 }
 
+// SetUnsafe stores a value in a field without typechecking it against
+// fd's [protoreflect.Kind]. The caller MUST ensure that v was constructed
+// via the matching ValueOf* constructor for fd; passing a wrong-typed
+// value will lead to panics during marshal/serialize.
+//
+// SetUnsafe is intended for codec generators (e.g. SBE/Avro/etc.) that
+// establish each field's type at codec-build time and don't need a
+// per-Set runtime check. Application code should use [Message.Set].
+//
+// Compared to Set, SetUnsafe skips the v.Interface() boxing inside the
+// typecheck path. On scalar-heavy workloads this avoids one heap
+// allocation per call (~16 B for non-pooled int values) and is roughly
+// 2x faster than Set.
+//
+// Field-membership and oneof-fixup checks are still performed; only
+// the value-type check is skipped. Extension fields fall back to the
+// regular [Message.Set] path because their oneof/list/map invariants
+// are checked by the same code that does the typecheck.
+func (m *Message) SetUnsafe(fd protoreflect.FieldDescriptor, v protoreflect.Value) {
+	if fd.IsExtension() {
+		m.Set(fd, v)
+		return
+	}
+	m.checkField(fd)
+	if m.known == nil {
+		panic(errors.New("%v: modification of read-only message", fd.FullName()))
+	}
+	m.clearOtherOneofFields(fd)
+	m.known[fd.Number()] = v
+}
+
 func (m *Message) clearOtherOneofFields(fd protoreflect.FieldDescriptor) {
 	od := fd.ContainingOneof()
 	if od == nil {
@@ -423,6 +454,22 @@ func (x *dynamicList) Append(v protoreflect.Value) {
 	x.list = append(x.list, v)
 }
 
+// AppendUnsafe is a faster equivalent of [Append] that skips the
+// runtime typecheck of v against the list's element kind. The caller
+// MUST ensure v was constructed via the matching ValueOf* constructor.
+//
+// Like [Message.SetUnsafe], this is intended for codec generators
+// where the type is established at codec-build time. Reach it via:
+//
+//	if u, ok := list.(interface{ AppendUnsafe(protoreflect.Value) }); ok {
+//	    u.AppendUnsafe(v)
+//	} else {
+//	    list.Append(v)
+//	}
+func (x *dynamicList) AppendUnsafe(v protoreflect.Value) {
+	x.list = append(x.list, v)
+}
+
 func (x *dynamicList) AppendMutable() protoreflect.Value {
 	if x.desc.Message() == nil {
 		panic(errors.New("%v: invalid AppendMutable on list with non-message type", x.desc.FullName()))
@@ -457,6 +504,25 @@ func (x *dynamicMap) Get(k protoreflect.MapKey) protoreflect.Value { return x.ma
 func (x *dynamicMap) Set(k protoreflect.MapKey, v protoreflect.Value) {
 	typecheckSingular(x.desc.MapKey(), k.Value())
 	typecheckSingular(x.desc.MapValue(), v)
+	x.mapv[k.Interface()] = v
+}
+
+// SetUnsafe is a faster equivalent of [Set] that skips the runtime
+// typechecks of k and v against the map's key/value kinds. The caller
+// MUST ensure k was constructed via the matching MapKeyOf* constructor
+// and v via the matching ValueOf* constructor.
+//
+// Like [Message.SetUnsafe] and [dynamicList.AppendUnsafe], reach it via
+// an interface assertion since dynamicMap is unexported:
+//
+//	if u, ok := m.(interface {
+//	    SetUnsafe(protoreflect.MapKey, protoreflect.Value)
+//	}); ok {
+//	    u.SetUnsafe(k, v)
+//	} else {
+//	    m.Set(k, v)
+//	}
+func (x *dynamicMap) SetUnsafe(k protoreflect.MapKey, v protoreflect.Value) {
 	x.mapv[k.Interface()] = v
 }
 func (x *dynamicMap) Has(k protoreflect.MapKey) bool { return x.Get(k).IsValid() }
