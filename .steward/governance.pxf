@@ -17,7 +17,7 @@ manifesto {
   # Caliper is itself a performance-sensitive analysis tool; regressions here
   # degrade every downstream repo that runs Caliper in CI.
   max_perf_regression_percent = 5
-  perf_significance_alpha = 0.06
+  perf_significance_alpha = 0.05
 }
 
 domains = [
