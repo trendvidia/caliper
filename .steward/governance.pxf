@@ -125,9 +125,6 @@ domains = [
 # Private repo with a small, fixed engineering team; escrow/sandbox flow
 # is not applicable.
 escrow {
-  sandbox_issue_count = 0
-  sandbox_labels = []
-  sandbox_templates = []
 }
 
 decay {
