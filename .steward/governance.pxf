@@ -1,16 +1,16 @@
 manifesto {
   mission = "Caliper is a Go-only static-analysis and code-transformation engine that powers Steward's closed-source analysis pass. It exposes AST-level pattern matching, CFG/taint analysis, and rewrite tools via an MCP server interface."
-
   # Caliper's own rules (sql_injection, nil_deref, etc.) make it the ideal
   # subject for strict module hygiene — it should never accidentally pull in
   # a competing analysis framework.
   mission_drift_gate = true
   blocked_module_globs = [
-    "golang.org/x/tools/go/analysis/passes/**",   # upstream analysistest harness; Caliper has its own
-    "honnef.co/go/tools/**",                       # staticcheck — we are the staticcheck
-    "github.com/golangci/golangci-lint/**",
+    "golang.org/x/tools/go/analysis/passes/**",
+    "honnef.co/go/tools/**",
+    "github.com/golangci/golangci-lint/**"
   ]
-
+  # upstream analysistest harness; Caliper has its own
+  # staticcheck — we are the staticcheck
   # Caliper is perf-sensitive: LLM clients stream results and latency shows.
   max_perf_regression_percent = 5
   perf_significance_alpha = 0.05
