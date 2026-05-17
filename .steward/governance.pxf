@@ -204,38 +204,36 @@ founders = [
 alternatives {
   enabled = true
   groups = [
-    # Caliper must not silently pull in a competing analysis framework.
     {
       name = "go-analysis-framework"
       modules = [
         "honnef.co/go/tools/analysis",
         "golang.org/x/tools/go/analysis",
-        "github.com/golangci/golangci-lint/pkg/golinters",
+        "github.com/golangci/golangci-lint/pkg/golinters"
       ]
-    }
+    },
     {
       name = "logger"
       modules = [
         "github.com/sirupsen/logrus",
         "go.uber.org/zap",
         "github.com/rs/zerolog",
-        "log/slog",   # stdlib — only one structured logger should be used
+        "log/slog"
       ]
-    }
+    },
     {
       name = "config-loader"
       modules = [
         "github.com/spf13/viper",
         "github.com/kelseyhightower/envconfig",
-        "github.com/caarlos0/env/v6",
+        "github.com/caarlos0/env/v6"
       ]
     }
   ]
-
   behavioral {
     # Conservative threshold: Caliper's internal API is dense with common
     # method names; too-low threshold produces noise.
-    jaccard_threshold = 0.40
+    jaccard_threshold = 0.4
     max_pairs = 15
     extra_stopwords = [
       "Visit",
@@ -246,7 +244,7 @@ alternatives {
       "Apply",
       "Pos",
       "End",
-      "Type",
+      "Type"
     ]
   }
 }
