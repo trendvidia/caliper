@@ -131,7 +131,7 @@ decay {
   # 6-month half-life suits a small private team shipping continuously.
   # Fast enough to re-center on current contributors; slow enough that a
   # two-week vacation doesn't crater your vote weight.
-  half_life = "180d"
+  half_life = 180d
   base_points = 100
 }
 
