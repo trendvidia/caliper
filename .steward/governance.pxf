@@ -1,17 +1,21 @@
 manifesto {
-  mission = "Caliper is a Go-only static-analysis and code-transformation engine that powers Steward's closed-source analysis pass. It exposes AST-level pattern matching, CFG/taint analysis, and rewrite tools via an MCP server interface."
-  # Caliper's own rules (sql_injection, nil_deref, etc.) make it the ideal
-  # subject for strict module hygiene — it should never accidentally pull in
-  # a competing analysis framework.
+  # Caliper is a private internal tool (the Steward analysis engine itself).
+  # It is Go-only, semantically complex, and directly gates other repos' PRs —
+  # so correctness and perf are load-bearing properties worth enforcing.
+  mission = "Semantic code analysis and transformation engine for Go. Implements AST pattern matching, control-flow analysis, and code transformation exposed via an MCP server interface. No scope creep into non-Go languages or general-purpose scripting."
   mission_drift_gate = true
+  # Block alternative analysis/AST frameworks that would duplicate Caliper's
+  # own purpose, and known heavyweight deps that conflict with the "lean
+  # binary distributed via Homebrew" goal.
   blocked_module_globs = [
-    "golang.org/x/tools/go/analysis/passes/**",
-    "honnef.co/go/tools/**",
-    "github.com/golangci/golangci-lint/**"
+    "github.com/spf13/viper",
+    "github.com/gorilla/**",
+    "go.uber.org/zap",
+    "github.com/sirupsen/logrus",
+    "github.com/rs/zerolog",
   ]
-  # upstream analysistest harness; Caliper has its own
-  # staticcheck — we are the staticcheck
-  # Caliper is perf-sensitive: LLM clients stream results and latency shows.
+  # Caliper is itself a performance-sensitive analysis tool; regressions here
+  # degrade every downstream repo that runs Caliper in CI.
   max_perf_regression_percent = 5
   perf_significance_alpha = 0.05
 }
@@ -19,101 +23,94 @@ manifesto {
 domains = [
   {
     name = "engine"
-    # Core AST/CFG/taint machinery — highest scrutiny.
+    # Core analysis passes: CFG, CHA/RTA/VTA call graph, taint, pattern engine.
     path_globs = [
       "internal/analysis/**",
       "internal/cfg/**",
+      "internal/callgraph/**",
       "internal/taint/**",
       "internal/pattern/**",
       "internal/transform/**",
     ]
     min_coverage = 85
     max_cyclomatic_complexity = 12
-    approval_threshold = 300
+    approval_threshold = 800
     criticality_multiplier = 3.0
-    restricted = false
+    # Engine-layer SARIF findings are always blocking; no per-domain waivers here.
+    ignored_sarif_rules = []
   }
   {
     name = "mcp"
-    # MCP server + 24 exposed tools — public API surface.
+    # MCP server surface: the 24 tool handlers and their wire format.
     path_globs = [
       "internal/mcp/**",
-      "cmd/**",
+      "cmd/caliper-mcp/**",
     ]
     min_coverage = 75
     max_cyclomatic_complexity = 10
-    approval_threshold = 200
+    approval_threshold = 500
     criticality_multiplier = 2.0
   }
   {
-    name = "rules"
-    # Bundled .gcl rule files; human-readable but affect every downstream user.
+    name = "sarif"
+    # SARIF output formatter — changes here affect every downstream CI consumer.
     path_globs = [
-      "patterns/**",
-      "rules/**",
-      "**/*.gcl",
-      "**/*.gsp",
+      "internal/sarif/**",
+      "internal/output/**",
     ]
-    min_coverage = 0       # not Go code, no coverage gate
-    approval_threshold = 200
+    min_coverage = 80
+    max_cyclomatic_complexity = 8
+    approval_threshold = 500
     criticality_multiplier = 2.0
-    restricted = false
-    # Structural pattern-match rules are pure data; SARIF analysis isn't applicable.
-    ignored_sarif_rules = ["SA1000", "SA4006"]
   }
   {
     name = "config"
-    # .caliper.pxf schema, PXF loader, options wiring.
+    # PXF config parsing and .caliper.pxf schema. Breakage silently disables gates.
     path_globs = [
       "internal/config/**",
-      "**/*.pxf",
+      "*.pxf",
+      ".caliper.pxf",
+    ]
+    min_coverage = 80
+    max_cyclomatic_complexity = 8
+    restricted = true
+    supermajority_ratio = 0.75
+    criticality_multiplier = 2.5
+  }
+  {
+    name = "patterns"
+    # .gcl rule files and the GCL pattern language grammar.
+    path_globs = [
+      "patterns/**",
+      "internal/gcl/**",
     ]
     min_coverage = 70
-    max_cyclomatic_complexity = 8
-    approval_threshold = 150
+    max_cyclomatic_complexity = 10
+    approval_threshold = 400
     criticality_multiplier = 1.5
   }
   {
-    name = "proto"
-    # Protobuf definitions (including protowire private dep). Changes here
-    # ripple into generated code across services.
-    path_globs = [
-      "proto/**",
-      "**/*.proto",
-      "gen/**",
-    ]
-    min_coverage = 0       # generated code excluded from coverage accounting
-    restricted = true
-    supermajority_ratio = 1.0
-    criticality_multiplier = 3.0
+    name = "docs"
+    path_globs = ["docs/**", "**/*.md", "**/*.txt"]
+    min_coverage = 0
+    criticality_multiplier = 0.5
   }
   {
-    name = "infra"
-    # CI, release scripts, Homebrew tap config, Makefile.
+    name = "ci"
+    # GitHub Actions, scripts, Makefile, Homebrew tap config.
     path_globs = [
       ".github/**",
       "scripts/**",
       "Makefile",
       "*.yaml",
       "*.yml",
-      ".goreleaser*",
     ]
     restricted = true
-    supermajority_ratio = 0.75
+    supermajority_ratio = 1.0
     criticality_multiplier = 2.0
   }
   {
-    name = "docs"
-    path_globs = [
-      "docs/**",
-      "**/*.md",
-      "README*",
-    ]
-    min_coverage = 0
-    criticality_multiplier = 0.5
-  }
-  {
-    # Safety net — anything not matched above still gets basic gates.
+    # Safety net: anything not matched above still gets basic gates.
     name = "other"
     path_globs = ["**"]
     min_coverage = 60
@@ -122,81 +119,83 @@ domains = [
   }
 ]
 
-# Private repo with a small, fixed engineering team; escrow/sandbox flow
-# is not applicable.
 escrow {
+  # Private internal repo — no external contributor onboarding queue needed.
+  sandbox_issue_count = 0
+  sandbox_labels = []
+  sandbox_templates = []
 }
 
 decay {
-  # 6-month half-life suits a small private team shipping continuously.
-  # Fast enough to re-center on current contributors; slow enough that a
-  # two-week vacation doesn't crater your vote weight.
-  half_life = 180d
+  # 180-day half-life: small private team, want recent contributors weighted
+  # higher but not so fast that a 3-month leave zeros someone out.
+  half_life = 4320h
   base_points = 100
 }
 
 immune_system {
-  # MIT-licensed; keep the dependency graph clean and permissive.
+  # MIT-licensed tool; keep the dep graph permissively licensed and auditable.
   allowed_licenses = ["MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC"]
-
-  # Caliper itself enforces pinning discipline downstream; hold it to the
-  # same standard.
+  # Caliper ships as a binary — pinned deps are essential for reproducible
+  # Homebrew bottles and `go install` invocations.
   require_pinned_dependencies = true
-
   anomaly_quarantine {
-    # A large doc-heavy diff that also touches engine code is suspicious.
+    # A doc-heavy PR that also touches the engine or MCP surface is suspicious.
     documentation_concentration = 0.75
-
-    # Engine internals, proto schema, and CI release config are the highest-
-    # value targets for supply-chain attacks.
     sensitive_path_globs = [
-      "internal/taint/**",
       "internal/analysis/**",
-      "proto/**",
-      ".github/workflows/**",
-      "scripts/release*",
-      ".goreleaser*",
+      "internal/taint/**",
+      "internal/callgraph/**",
+      "internal/config/**",
+      ".steward/governance.pxf",
+      ".github/**",
+      "go.mod",
+      "go.sum",
     ]
-
-    # 24-hour cooling period before any sensitive-path PR can land.
-    timelock = "24h"
+    # 24-hour soak on sensitive-path PRs; enough for async team review.
+    timelock = 24h
   }
 }
 
 amendments {
-  # Two-thirds supermajority among the top-5 reputation holders.
-  supermajority_ratio = 0.66
-  top_n_holders = 5
-  voting_period = "120h"   # 5 days — long enough for async review across time zones
+  # Small team: supermajority of top-3 holders is sufficient to prevent
+  # unilateral governance changes while staying practical.
+  supermajority_ratio = 0.75
+  top_n_holders = 3
+  voting_period = 72h
   amendment_path_globs = [
     ".steward/governance.pxf",
     "CODEOWNERS",
   ]
 }
 
-# Caliper powers an on-call analysis service; contributors own the bugs
-# they ship. Slashing is enabled with moderate parameters calibrated for
-# an internal team.
 slashing {
+  # Caliper findings directly affect downstream repos. A bug in the analysis
+  # engine that produces false-positive blocks has real engineering cost.
+  # Enable slashing so contributors have skin in the game for correctness.
   enabled = true
   base_points = 75
-  growth_half_life = "45d"   # penalty doubles roughly every 6 weeks
-  max_multiplier = 6.0       # cap at 6× for ancient latent bugs
+  # Penalty doubles every 90 days — bugs found later are harder to bisect
+  # and have caused more downstream damage.
+  growth_half_life = 2160h
+  max_multiplier = 6.0
 }
 
 founders = [
+  # Seed all domains so day-one governance thresholds are reachable.
+  # Values decay at 4320h half-life; after ~2 years a consistent contributor
+  # will have comparable or greater weight through earned reputation.
   {
-    # Replace with the actual GitHub handle(s) of Caliper's initial authors.
-    # Each domain listed here must match a name in the domains section above.
     handle = "trendvidia-bot"
     reputation_seed = {
-      "engine" = 1500
-      "mcp"    = 1200
-      "rules"  = 1000
-      "config" = 800
-      "proto"  = 1000
-      "infra"  = 800
-      "docs"   = 500
+      "engine": 1500
+      "mcp": 1200
+      "sarif": 1000
+      "config": 1200
+      "patterns": 1000
+      "docs": 600
+      "ci": 1000
+      "other": 500
     }
   }
 ]
@@ -204,85 +203,63 @@ founders = [
 alternatives {
   enabled = true
   groups = [
-    {
-      name = "go-analysis-framework"
-      modules = [
-        "honnef.co/go/tools/analysis",
-        "golang.org/x/tools/go/analysis",
-        "github.com/golangci/golangci-lint/pkg/golinters"
-      ]
-    },
-    {
-      name = "logger"
-      modules = [
+    # Caliper has its own logger abstraction; block competing structured-log deps.
+    { name = "logger" modules = [
         "github.com/sirupsen/logrus",
         "go.uber.org/zap",
         "github.com/rs/zerolog",
-        "log/slog"
-      ]
-    },
-    {
-      name = "config-loader"
-      modules = [
+        "log/slog",
+    ] }
+    # Block competing config libraries; the repo uses PXF (protowire) exclusively.
+    { name = "config" modules = [
         "github.com/spf13/viper",
         "github.com/kelseyhightower/envconfig",
-        "github.com/caarlos0/env/v6"
-      ]
-    }
+        "github.com/caarlos0/env/v6",
+    ] }
+    # Block competing AST/analysis frameworks that would duplicate the engine.
+    { name = "go-analysis" modules = [
+        "golang.org/x/tools/go/analysis",
+        "honnef.co/go/tools",
+        "github.com/golangci/golangci-lint",
+    ] }
   ]
   behavioral {
-    # Conservative threshold: Caliper's internal API is dense with common
-    # method names; too-low threshold produces noise.
-    jaccard_threshold = 0.4
-    max_pairs = 15
-    extra_stopwords = [
-      "Visit",
-      "Walk",
-      "Inspect",
-      "Match",
-      "Bind",
-      "Apply",
-      "Pos",
-      "End",
-      "Type"
-    ]
+    # Slightly higher Jaccard threshold to reduce noise in a specialized codebase
+    # where many packages legitimately share low-level primitives.
+    jaccard_threshold = 0.40
+    max_pairs = 20
+    # Caliper's own domain terms appear everywhere; suppress to reduce stopword noise.
+    extra_stopwords = ["Visit", "Walk", "Match", "Node", "File", "Package", "Scope", "Pos"]
   }
 }
 
 sarif {
-  # Caliper emits SARIF itself; also consume SARIF from CI linters (staticvet,
-  # govulncheck, etc.) to gate its own PRs under the same framework.
+  # Go-only repo, but we do want ESLint/other linters on any web assets
+  # (docs generator, dashboard snippets) that might land here.
+  # Also, Caliper itself emits SARIF — dogfooding is strongly encouraged.
   enabled = true
   artifact_glob = "*.sarif"
 }
 
 precedent {
-  # Issue volume is low (private repo); jaccard is sufficient and requires no
-  # external API keys.
+  # Private repo with moderate issue volume; jaccard is sufficient.
   backend = "jaccard"
   threshold = 0.45
   candidate_limit = 50
 }
 
 triage {
-  # Deterministic triage is adequate for a small private issue tracker.
+  # Deterministic triage is appropriate for a focused internal tool.
+  # The domain criticality_multiplier values above drive priority weighting.
   backend = "deterministic"
-  high_priority_min = 2.0   # engine/proto domain criticality must be ≥ 2× to auto-escalate
+  high_priority_min = 2.0
   medium_priority_min = 1.0
 }
 
 caliper {
-  # Caliper governs itself. All default rules apply; override to a focused
-  # set avoids infinite-regress noise from its own meta-analysis.
+  # Caliper governs itself — full dogfood. All default rules apply.
+  # This is intentionally unrestricted: if a rule catches something in the
+  # engine, that's exactly the signal we want.
   enabled = true
-  rules = [
-    "nil_deref",
-    "resource_leak",
-    "race_condition",
-    "sql_injection",
-    "taint_flow",
-    "goroutine_leak",
-    "error_swallow",
-    "lock_violation",
-  ]
+  rules = []
 }
