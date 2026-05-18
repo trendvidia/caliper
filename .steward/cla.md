@@ -44,7 +44,3 @@ Your Contributions are provided **"as is"**, without warranty of any kind, expre
 ## Effective Date and Binding Effect
 
 This Agreement takes effect the first time You submit a Contribution to the Project. Each acceptance through Steward's CLA dashboard captures a SHA-256 hash of the Agreement text in effect at sign time. If the Agreement is amended in a material way, You will be asked to re-accept the updated version before Your next Contribution can be merged. Prior accepted Contributions remain subject to the version of this Agreement in effect when they were submitted.
-
----
-
-*This document is an AI-drafted starter produced by Steward; have qualified legal counsel review it before relying on it in production.*
