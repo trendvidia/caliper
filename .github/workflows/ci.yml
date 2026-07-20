@@ -13,11 +13,23 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      # Build/test on the trendvidia/go ("go-plus") fork — dogfooding the
+      # compiler across private repos. setup-go-plus mints a scoped token from
+      # the GitHub App to fetch the fork's release tarball.
+      - name: Set up go-plus
+        uses: trendvidia/setup-go-plus@v1
         with:
-          go-version: 'stable'
-          cache: true
+          version: v1.26.5
+          app-id: ${{ secrets.GOPLUS_APP_ID }}
+          private-key: ${{ secrets.GOPLUS_APP_KEY }}
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
+          restore-keys: gomod-${{ runner.os }}-
 
       - name: gofmt
         run: |
@@ -43,15 +55,14 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      - name: Set up Go
-        uses: actions/setup-go@v6
+      # go-plus toolchain. golangci-lint manages its own cache, so there is no
+      # module cache step here (setup-go-plus caches only the toolchain).
+      - name: Set up go-plus
+        uses: trendvidia/setup-go-plus@v1
         with:
-          go-version: 'stable'
-          # Disable setup-go's cache here. The lint job doesn't run
-          # `go test` or `go build`, so the module cache is never
-          # populated; setup-go's post-step warns about missing paths.
-          # golangci-lint manages its own cache via the action below.
-          cache: false
+          version: v1.26.5
+          app-id: ${{ secrets.GOPLUS_APP_ID }}
+          private-key: ${{ secrets.GOPLUS_APP_KEY }}
 
       - uses: golangci/golangci-lint-action@v8
         with:
