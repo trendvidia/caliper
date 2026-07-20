@@ -9,27 +9,14 @@ on:
 jobs:
   test:
     name: vet + build + test
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v5
 
-      # Build/test on the trendvidia/go ("go-plus") fork — dogfooding the
-      # compiler across private repos. setup-go-plus mints a scoped token from
-      # the GitHub App to fetch the fork's release tarball.
-      - name: Set up go-plus
-        uses: trendvidia/setup-go-plus@v1
-        with:
-          version: v1.26.5
-          app-id: ${{ secrets.GOPLUS_APP_ID }}
-          private-key: ${{ secrets.GOPLUS_APP_KEY }}
-
-      - uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/go/pkg/mod
-          key: gomod-${{ runner.os }}-${{ hashFiles('**/go.sum') }}
-          restore-keys: gomod-${{ runner.os }}-
+      - name: Assert go-plus toolchain
+        run: |
+          go version
+          go version | grep -q '(plus)' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
 
       - name: gofmt
         run: |
@@ -51,18 +38,14 @@ jobs:
 
   lint:
     name: golangci-lint
-    runs-on: ubuntu-latest
+    runs-on: [self-hosted, macOS, ARM64]
     steps:
       - uses: actions/checkout@v5
 
-      # go-plus toolchain. golangci-lint manages its own cache, so there is no
-      # module cache step here (setup-go-plus caches only the toolchain).
-      - name: Set up go-plus
-        uses: trendvidia/setup-go-plus@v1
-        with:
-          version: v1.26.5
-          app-id: ${{ secrets.GOPLUS_APP_ID }}
-          private-key: ${{ secrets.GOPLUS_APP_KEY }}
+      - name: Assert go-plus toolchain
+        run: |
+          go version
+          go version | grep -q '(plus)' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
 
       - uses: golangci/golangci-lint-action@v8
         with:
