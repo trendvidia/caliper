@@ -1,10 +1,26 @@
 # Changelog
 
 All notable user-visible changes to caliper. Format roughly follows
-[Keep a Changelog](https://keepachangelog.com/en/1.1.0/) without strict
-versioning until the project tags its first release.
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## Unreleased
+
+## v1.1.0 — 2026-07-29
+
+### Added
+
+- **`caliper-analyze`** — a single-shot CLI for non-LLM consumers. The
+  MCP server's session model is protocol overhead when the consumer
+  just wants one analysis and a report; `caliper-analyze` spawns,
+  analyzes, writes SARIF to stdout, and exits. Aimed at CI gates,
+  reviewdog, and GitHub Code Scanning uploads.
+
+  ```
+  caliper-analyze -workspace . -format sarif > results.sarif
+  ```
+
+  Flags: `-workspace`, `-rules` (comma-separated rule kinds; defaults
+  to the PR-default set), `-format` (`sarif` or `json`), `-version`.
 
 ### Analyzer behavior
 
@@ -25,6 +41,24 @@ versioning until the project tags its first release.
     err-check, or inside a function whose name matches cleanup keywords
     (close/clean/dispose/finalize/teardown/shutdown/destroy/release)
     are suppressed.
+  - `fmt.State` recognizer: writes to the `fmt.State` parameter inside
+    a `Format(s fmt.State, c rune)` method are never flagged, since fmt
+    always supplies a buffer-backed implementation. ~50+ stdlib call
+    sites — the dominant residual noise after the writer-arg
+    suppressions above.
+  - `bracketedByErrCheck` walks outer enclosing blocks, so err-check
+    bracketing is detected across nesting.
+- **`find_error_swallow`**: re-implemented on top of the
+  `find_unchecked_error` engine, inheriting its infallibility
+  allowlist, CFG cleanup-path detector and writer-arg transitivity
+  while keeping its own value-use severity escalation (a dropped error
+  whose sibling value is used downstream escalates to `error`). The MCP
+  tool name and input schema are unchanged. **Behavior change**: the
+  unified check is stricter — bare `f.Close()` discards are now flagged
+  by default, where the old implementation required an explicit opt-in.
+- **`find_race_condition`**: recognizes `x++`/`x--` as writes.
+  Goroutines that captured and incremented a counter previously
+  produced no finding at all.
 - **`find_race_condition`**: honors Go 1.22+ per-iteration loop scoping
   via `packages.NeedModule`/`Module.GoVersion`. A goroutine capturing
   the loop variable in a Go ≥ 1.22 module is no longer flagged unless
@@ -43,6 +77,8 @@ versioning until the project tags its first release.
 - Per-analysis-path config resolution: each tool call walks up from
   the analysis path looking for `.caliper.pxf`, falling back to the
   server-boot config. Was previously a single boot-time load.
+- Every `find_*`/`check_*` tool description now mentions `.caliper.pxf`,
+  so MCP clients surface the config path without consulting the docs.
 
 ### Performance
 
@@ -76,7 +112,9 @@ versioning until the project tags its first release.
 ### Build & release
 
 - **GitHub Actions CI**: gofmt + vet + build + `test -race` +
-  golangci-lint on push/PR.
+  golangci-lint on push/PR, on a self-hosted macOS runner pinned to the
+  go-plus toolchain.
+- Migrated from `github.com/trendvidia/protowire` to `protowire-go`.
 - **`-ldflags "-X main.Version=..."`** support: server reports the
   passed version in the MCP initialize handshake. Falls back to
   `dev-<vcs.revision>[-dirty]` from `runtime/debug.BuildInfo` when
@@ -92,3 +130,12 @@ versioning until the project tags its first release.
 - Minor dead-code cleanup: `templates/leaks.go: buildDeferReleasePredicate`,
   `templates/race.go: statementsAfter, isImmutableValueType`,
   `mcp/tools.go: allTools()`.
+- `pkg/mcp/server.go` decomposed into focused files; `findInnermostBlock`
+  moved to a shared `astutil.go`; `lookupIdent`'s name→object map
+  memoized per `TemplateContext`; test engine fixtures shared by
+  `(src, goVersion)` hash.
+
+## v1.0.21 and earlier
+
+See the [commit history](https://github.com/trendvidia/caliper/commits/main)
+and [releases](https://github.com/trendvidia/caliper/releases).
