@@ -13,11 +13,19 @@ brew install trendvidia/tap/caliper
 
 ### From source
 
+Caliper ships two binaries — the MCP server, and a single-shot CLI for
+CI use:
+
 ```bash
+# MCP server, for LLM-driven interactive use
 GOPRIVATE=github.com/trendvidia/* go install github.com/trendvidia/caliper/cmd/caliper-mcp@latest
+
+# Single-shot analyzer, emits SARIF or JSON and exits
+GOPRIVATE=github.com/trendvidia/* go install github.com/trendvidia/caliper/cmd/caliper-analyze@latest
 ```
 
-Note: `GOPRIVATE` is required because the `protowire` dependency is a private module.
+Note: `GOPRIVATE` is required because `trendvidia/caliper` is itself a
+private module. Its dependencies are all public.
 
 ## Claude Code MCP Configuration
 

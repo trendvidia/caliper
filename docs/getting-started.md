@@ -26,16 +26,22 @@ Caliper's output is optimized for LLM consumption: compact JSON with short keys,
 
 ### Download
 
-Download the appropriate binary for your platform from the [releases page](https://github.com/trendvidia/caliper/releases):
+Download the appropriate binary for your platform from the [releases page](https://github.com/trendvidia/caliper/releases).
 
-| Platform | Architecture | File |
-|----------|-------------|------|
-| macOS | Apple Silicon (M1/M2/M3/M4) | `caliper-darwin-arm64` |
-| macOS | Intel | `caliper-darwin-amd64` |
-| Linux | ARM64 | `caliper-linux-arm64` |
-| Linux | x86_64 | `caliper-linux-amd64` |
-| Windows | ARM64 | `caliper-windows-arm64.exe` |
-| Windows | x86_64 | `caliper-windows-amd64.exe` |
+Caliper ships two binaries. `caliper` is the MCP server; `caliper-analyze`
+is a single-shot CLI that emits SARIF or JSON and exits, for CI use. Most
+users only need the first.
+
+| Platform | Architecture | MCP server | Single-shot CLI |
+|----------|-------------|------------|-----------------|
+| macOS | Apple Silicon (M1/M2/M3/M4) | `caliper-darwin-arm64` | `caliper-analyze-darwin-arm64` |
+| macOS | Intel | `caliper-darwin-amd64` | `caliper-analyze-darwin-amd64` |
+| Linux | ARM64 | `caliper-linux-arm64` | `caliper-analyze-linux-arm64` |
+| Linux | x86_64 | `caliper-linux-amd64` | `caliper-analyze-linux-amd64` |
+| Windows | ARM64 | `caliper-windows-arm64.exe` | `caliper-analyze-windows-arm64.exe` |
+| Windows | x86_64 | `caliper-windows-amd64.exe` | `caliper-analyze-windows-amd64.exe` |
+
+Each release also ships `checksums.txt` for verification.
 
 #### macOS / Linux
 
@@ -67,8 +73,15 @@ brew install trendvidia/tap/caliper
 ### From Source
 
 ```bash
+# MCP server
 GOPRIVATE=github.com/trendvidia/* go install github.com/trendvidia/caliper/cmd/caliper-mcp@latest
+
+# Single-shot analyzer
+GOPRIVATE=github.com/trendvidia/* go install github.com/trendvidia/caliper/cmd/caliper-analyze@latest
 ```
+
+`GOPRIVATE` is required because `trendvidia/caliper` is itself a private
+module. Its dependencies are all public.
 
 ### Verify Installation
 

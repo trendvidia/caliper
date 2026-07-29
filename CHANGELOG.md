@@ -5,6 +5,44 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+## v1.1.1 — 2026-07-29
+
+### Fixed
+
+- **`go install` works again.** v1.1.0's `go.mod` still carried two
+  `replace` directives, and Go refuses to install any module whose
+  `go.mod` contains them:
+
+  ```
+  The go.mod file for the module providing named packages contains one
+  or more replace directives.
+  ```
+
+  This broke the exact command documented in the README, for both
+  `@latest` and `@v1.1.0`. Homebrew was unaffected, since it builds from
+  the release tarball where the replaces resolved against `vendor/`.
+  Introduced between v1.0.21 (which had no replaces and installed fine)
+  and v1.1.0.
+
+### Added
+
+- **Prebuilt release binaries.** `docs/getting-started.md` has always
+  documented downloadable binaries for six platforms, but no release
+  ever carried a single asset and the documented `curl` URL returned
+  404. Releases now actually ship them, for macOS / Linux / Windows ×
+  amd64 / arm64, built `CGO_ENABLED=0` and stamped with
+  `-X main.Version`, plus a `checksums.txt`.
+- `caliper-analyze` is now documented in the README and getting-started
+  install sections; it shipped in v1.1.0 but only `caliper-mcp` was
+  mentioned.
+
+### Changed
+
+- The README's `GOPRIVATE` note claimed it was needed because the
+  `protowire` dependency is private. protowire-go is public now; the
+  requirement remains only because `trendvidia/caliper` itself is a
+  private module.
+
 ### Build
 
 - **`vendor/` removed** — 505 tracked files, 6.2 MB. It was introduced
