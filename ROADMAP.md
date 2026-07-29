@@ -238,7 +238,7 @@ here so the deltas are tracked.
   recovery in the stdio tool-call worker) was upstreamed in
   mark3labs/mcp-go#882 and shipped in v0.54.0, so the interim
   trendvidia/mcp-go fork and its `replace` directive are gone.
-  caliper vendors stock upstream `v0.57.0`.
+  caliper depends on stock upstream `v0.57.0`.
 
 ## Phase 6 — Coccinelle Parity
 

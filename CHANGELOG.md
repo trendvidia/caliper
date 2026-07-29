@@ -7,6 +7,22 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ### Build
 
+- **`vendor/` removed** — 505 tracked files, 6.2 MB. It was introduced
+  in `18642a4` for one reason: `trendvidia/protowire-go` was a private
+  repo and Homebrew's sandboxed build could not fetch it. protowire-go
+  and protobuf-go are both public now, so that reason is gone.
+  Dependency changes become reviewable again — the mcp-go upgrade
+  touched 161 vendored files around a 5-file source change.
+
+  Consumers building from a **tagged release ≤ v1.1.0 are unaffected**:
+  those tarballs still contain `vendor/`, and Go selects vendor mode
+  automatically when `vendor/modules.txt` is present. Builds from
+  `main` now resolve from the module proxy instead.
+
+  The Homebrew formula's explicit `GOFLAGS=-mod=vendor` must be dropped
+  for `--head` builds to keep working; without it Go picks the right
+  mode for either tree.
+
 - **No `replace` directives left in `go.mod`.** The two remaining
   local-path replaces are gone; caliper now builds from published
   versions alone.
