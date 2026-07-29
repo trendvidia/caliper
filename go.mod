@@ -4,7 +4,7 @@ go 1.26.1
 
 require (
 	github.com/mark3labs/mcp-go v0.57.0
-	github.com/trendvidia/protowire-go v0.0.0-00010101000000-000000000000
+	github.com/trendvidia/protowire-go v1.3.2
 	golang.org/x/tools v0.44.0
 	google.golang.org/protobuf v1.36.11
 )
@@ -21,10 +21,3 @@ require (
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/text v0.14.0 // indirect
 )
-
-replace github.com/trendvidia/protowire-go => ../protowire-go
-
-// protowire-go uses dynamicpb.Message.SetUnsafe (a fork-only fast-path).
-// Pull in the same protobuf-go fork it builds against; keeps the
-// vendored copy compilable here.
-replace google.golang.org/protobuf => ../protobuf-go

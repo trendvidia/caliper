@@ -5,6 +5,32 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Build
+
+- **No `replace` directives left in `go.mod`.** The two remaining
+  local-path replaces are gone; caliper now builds from published
+  versions alone.
+  - `github.com/trendvidia/protowire-go` pinned to **v1.3.2** (was a
+    `v0.0.0-00010101000000-000000000000` placeholder resolved through
+    `=> ../protowire-go`, so the version in `go.mod` said nothing about
+    what was being compiled).
+  - `google.golang.org/protobuf` now resolves to stock upstream
+    **v1.36.11** — already the required version and the newest upstream
+    release; only the `=> ../protobuf-go` fork redirect was removed.
+- **Consequence — the PXF decode fast path is off in non-workspace
+  builds.** protowire-go probes for `SetUnsafe`/`AppendUnsafe` (a
+  `trendvidia/protobuf-go` addition) via a runtime type assertion and
+  falls back to `protoreflect.Message.Set` when absent, so upstream
+  protobuf compiles fine and simply takes the standard path. caliper
+  only decodes `.caliper.pxf` config files, where the difference is
+  not measurable. The previous go.mod comment claiming the fork was
+  needed to keep the vendored copy *compilable* was incorrect.
+- Building from a sibling checkout is no longer required, and no
+  credentials are needed either: `trendvidia/protowire-go` and
+  `trendvidia/protobuf-go` are public, so both resolve anonymously from
+  the module proxy. `GOPRIVATE` is not required for any caliper
+  dependency.
+
 ## v1.1.0 — 2026-07-29
 
 ### Added
