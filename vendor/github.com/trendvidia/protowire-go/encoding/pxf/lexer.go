@@ -1,7 +1,9 @@
+// Copyright 2026 TrendVidia LLC
+// SPDX-License-Identifier: MIT
+
 package pxf
 
 import (
-	"encoding/base64"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -13,6 +15,22 @@ type lexer struct {
 	pos   int
 	line  int
 	col   int
+
+	// tolerant enables the error-recovering behaviors used by
+	// [ParseTolerant]: unterminated strings end at the newline (or EOF),
+	// unterminated triple-quoted strings / block comments / bytes
+	// literals end at EOF, invalid escape sequences are kept literally,
+	// and bytes literals skip base64 pre-validation (the parser reports
+	// it instead). Each recovery reports a positioned error via onErr.
+	tolerant bool
+	onErr    func(pos Position, msg string)
+}
+
+// reportErr records a recoverable lexical error in tolerant mode.
+func (l *lexer) reportErr(pos Position, msg string) {
+	if l.onErr != nil {
+		l.onErr(pos, msg)
+	}
 }
 
 func newLexer(input []byte) *lexer {
@@ -50,7 +68,7 @@ func (l *lexer) advance() byte {
 }
 
 func (l *lexer) currentPos() Position {
-	return Position{Line: l.line, Column: l.col}
+	return Position{Line: l.line, Column: l.col, Offset: l.pos}
 }
 
 func (l *lexer) skipSpaces() {
@@ -106,6 +124,12 @@ func (l *lexer) Next() Token {
 	case ch == ']':
 		l.advance()
 		return Token{Kind: RBRACKET, Value: "]", Pos: pos}
+	case ch == '(':
+		l.advance()
+		return Token{Kind: LPAREN, Value: "(", Pos: pos}
+	case ch == ')':
+		l.advance()
+		return Token{Kind: RPAREN, Value: ")", Pos: pos}
 	case ch == '=':
 		l.advance()
 		return Token{Kind: EQUALS, Value: "=", Pos: pos}
@@ -118,7 +142,7 @@ func (l *lexer) Next() Token {
 	case ch == '@':
 		return l.lexDirective(pos)
 
-	case ch == '-' || isDigit(ch):
+	case ch == '-' || ch == '+' || isDigit(ch):
 		return l.lexNumber(pos)
 
 	case isIdentStart(ch):
@@ -150,6 +174,13 @@ func (l *lexer) lexBlockComment(pos Position) Token {
 		}
 		l.advance()
 	}
+	if l.tolerant {
+		for l.pos < len(l.input) {
+			l.advance()
+		}
+		l.reportErr(pos, "unterminated block comment")
+		return Token{Kind: COMMENT, Value: string(l.input[start:l.pos]), Pos: pos}
+	}
 	return Token{Kind: ILLEGAL, Value: "unterminated block comment", Pos: pos}
 }
 
@@ -157,7 +188,16 @@ func (l *lexer) lexString(pos Position) Token {
 	l.advance() // opening "
 	var sb strings.Builder
 	var buf [utf8.UTFMax]byte
+	tolerant := l.tolerant // hoisted: checked once per byte below
 	for l.pos < len(l.input) {
+		if tolerant && l.peek() == '\n' {
+			// Recovery for mid-edit buffers: treat the newline as the
+			// end of the (unterminated) string, leaving the newline for
+			// the next token. Strict mode instead consumes the newline
+			// into the literal and keeps scanning for the closing quote.
+			l.reportErr(pos, "unterminated string: ended at newline")
+			return Token{Kind: STRING, Value: sb.String(), Pos: pos}
+		}
 		ch := l.advance()
 		if ch == '"' {
 			return Token{Kind: STRING, Value: sb.String(), Pos: pos}
@@ -167,7 +207,15 @@ func (l *lexer) lexString(pos Position) Token {
 			continue
 		}
 		if l.pos >= len(l.input) {
+			if tolerant {
+				l.reportErr(pos, "unterminated escape sequence")
+				return Token{Kind: STRING, Value: sb.String(), Pos: pos}
+			}
 			return Token{Kind: ILLEGAL, Value: "unterminated escape sequence", Pos: pos}
+		}
+		var escPos Position
+		if tolerant { // strict mode never reads it; skip the capture
+			escPos = l.currentPos()
 		}
 		esc := l.advance()
 		switch esc {
@@ -190,18 +238,34 @@ func (l *lexer) lexString(pos Position) Token {
 		case 'x':
 			b, ok := l.readHexByte()
 			if !ok {
+				if tolerant {
+					l.reportErr(escPos, `invalid \x escape: expected 2 hex digits`)
+					sb.WriteString(`\x`)
+					continue
+				}
 				return Token{Kind: ILLEGAL, Value: `invalid \x escape: expected 2 hex digits`, Pos: pos}
 			}
 			sb.WriteByte(b)
 		case '0', '1', '2', '3':
 			b, ok := l.readOctRest(esc)
 			if !ok {
+				if tolerant {
+					l.reportErr(escPos, `invalid octal escape: expected 3 octal digits`)
+					sb.WriteByte('\\')
+					sb.WriteByte(esc)
+					continue
+				}
 				return Token{Kind: ILLEGAL, Value: `invalid octal escape: expected 3 octal digits`, Pos: pos}
 			}
 			sb.WriteByte(b)
 		case 'u':
 			r, ok := l.readHexRune(4)
 			if !ok || !utf8.ValidRune(r) {
+				if tolerant {
+					l.reportErr(escPos, `invalid \u escape: expected 4 hex digits forming a valid codepoint`)
+					sb.WriteString(`\u`)
+					continue
+				}
 				return Token{Kind: ILLEGAL, Value: `invalid \u escape: expected 4 hex digits forming a valid codepoint`, Pos: pos}
 			}
 			n := utf8.EncodeRune(buf[:], r)
@@ -209,13 +273,28 @@ func (l *lexer) lexString(pos Position) Token {
 		case 'U':
 			r, ok := l.readHexRune(8)
 			if !ok || !utf8.ValidRune(r) {
+				if tolerant {
+					l.reportErr(escPos, `invalid \U escape: expected 8 hex digits forming a valid codepoint`)
+					sb.WriteString(`\U`)
+					continue
+				}
 				return Token{Kind: ILLEGAL, Value: `invalid \U escape: expected 8 hex digits forming a valid codepoint`, Pos: pos}
 			}
 			n := utf8.EncodeRune(buf[:], r)
 			sb.Write(buf[:n])
 		default:
+			if tolerant {
+				l.reportErr(escPos, `unknown escape sequence \`+string(esc))
+				sb.WriteByte('\\')
+				sb.WriteByte(esc)
+				continue
+			}
 			return Token{Kind: ILLEGAL, Value: `unknown escape sequence \` + string(esc), Pos: pos}
 		}
+	}
+	if tolerant {
+		l.reportErr(pos, "unterminated string")
+		return Token{Kind: STRING, Value: sb.String(), Pos: pos}
 	}
 	return Token{Kind: ILLEGAL, Value: "unterminated string", Pos: pos}
 }
@@ -234,6 +313,13 @@ func (l *lexer) lexTripleString(pos Position) Token {
 			return Token{Kind: STRING, Value: dedent(raw), Pos: pos}
 		}
 		l.advance()
+	}
+	if l.tolerant {
+		for l.pos < len(l.input) {
+			l.advance()
+		}
+		l.reportErr(pos, "unterminated triple-quoted string")
+		return Token{Kind: STRING, Value: dedent(string(l.input[start:l.pos])), Pos: pos}
 	}
 	return Token{Kind: ILLEGAL, Value: "unterminated triple-quoted string", Pos: pos}
 }
@@ -273,17 +359,30 @@ func (l *lexer) lexBytes(pos Position) Token {
 		if ch == '"' {
 			raw := string(l.input[start:l.pos])
 			l.advance() // closing "
-			if _, err := base64.StdEncoding.DecodeString(raw); err != nil {
-				if _, err2 := base64.RawStdEncoding.DecodeString(raw); err2 != nil {
+			// Accept both standard and URL-safe base64, with or without
+			// padding, per RFC 4648 §5 (referenced by draft §3.7).
+			// Tolerant mode defers validation to the parser, which turns
+			// a decode failure into a positioned error plus a BadVal.
+			if !l.tolerant {
+				if _, err := decodeBase64Lenient(raw); err != nil {
 					return Token{Kind: ILLEGAL, Value: "invalid base64 in bytes literal", Pos: pos}
 				}
 			}
 			return Token{Kind: BYTES, Value: raw, Pos: pos}
 		}
 		if ch == '\n' {
+			if l.tolerant {
+				// Leave the newline for the next token.
+				l.reportErr(pos, "unterminated bytes literal: ended at newline")
+				return Token{Kind: BYTES, Value: string(l.input[start:l.pos]), Pos: pos}
+			}
 			return Token{Kind: ILLEGAL, Value: "unterminated bytes literal", Pos: pos}
 		}
 		l.advance()
+	}
+	if l.tolerant {
+		l.reportErr(pos, "unterminated bytes literal")
+		return Token{Kind: BYTES, Value: string(l.input[start:l.pos]), Pos: pos}
 	}
 	return Token{Kind: ILLEGAL, Value: "unterminated bytes literal", Pos: pos}
 }
@@ -295,21 +394,38 @@ func (l *lexer) lexDirective(pos Position) Token {
 		l.advance()
 	}
 	name := string(l.input[start:l.pos])
+	if name == "" {
+		return Token{Kind: ILLEGAL, Value: "@", Pos: pos}
+	}
 	if name == "type" {
 		return Token{Kind: AT_TYPE, Value: "@type", Pos: pos}
 	}
-	return Token{Kind: ILLEGAL, Value: "@" + name, Pos: pos}
+	if name == "dataset" {
+		return Token{Kind: AT_DATASET, Value: "@dataset", Pos: pos}
+	}
+	if name == "proto" {
+		return Token{Kind: AT_PROTO, Value: "@proto", Pos: pos}
+	}
+	return Token{Kind: AT_DIRECTIVE, Value: name, Pos: pos}
 }
 
 func (l *lexer) lexNumber(pos Position) Token {
 	start := l.pos
 	neg := false
-	if l.peek() == '-' {
-		neg = true
+	if sign := l.peek(); sign == '-' || sign == '+' {
 		l.advance()
-		if l.pos >= len(l.input) || !isDigit(l.peek()) {
-			return Token{Kind: ILLEGAL, Value: "-", Pos: pos}
+		// Spec §3.8: "+inf" and "-inf" are the only signed identifier
+		// literals. A '+' sign is valid for nothing else.
+		if l.hasIdent("inf") {
+			l.advance()
+			l.advance()
+			l.advance()
+			return Token{Kind: FLOAT, Value: l.viewString(start, l.pos), Pos: pos}
 		}
+		if sign == '+' || l.pos >= len(l.input) || !isDigit(l.peek()) {
+			return Token{Kind: ILLEGAL, Value: string(sign), Pos: pos}
+		}
+		neg = true
 	}
 
 	digitStart := l.pos
@@ -358,7 +474,7 @@ func (l *lexer) lexTimestamp(pos Position, start int) Token {
 	for l.pos < len(l.input) {
 		ch := l.peek()
 		if ch == ' ' || ch == '\n' || ch == '\t' || ch == '\r' ||
-			ch == ',' || ch == ']' || ch == '}' || ch == '#' {
+			ch == ',' || ch == ']' || ch == '}' || ch == ')' || ch == '#' {
 			break
 		}
 		if ch == '/' && (l.peekAt(1) == '/' || l.peekAt(1) == '*') {
@@ -401,6 +517,20 @@ func (l *lexer) lexIdent(pos Position) Token {
 	return Token{Kind: IDENT, Value: val, Pos: pos}
 }
 
+// hasIdent reports whether the input at the current position reads
+// exactly the identifier word (not a prefix of a longer identifier).
+// Does not advance.
+func (l *lexer) hasIdent(word string) bool {
+	end := l.pos + len(word)
+	if end > len(l.input) {
+		return false
+	}
+	if string(l.input[l.pos:end]) != word {
+		return false
+	}
+	return end == len(l.input) || !isIdentPart(l.input[end])
+}
+
 // viewString returns a zero-copy string view into the input buffer.
 // Safe only for values that are NOT stored in proto messages (field names,
 // numbers, timestamps, durations — all consumed during decode and discarded).
@@ -411,11 +541,15 @@ func (l *lexer) viewString(start, end int) string {
 	return unsafe.String(&l.input[start], end-start)
 }
 
-func isDigit(ch byte) bool       { return ch >= '0' && ch <= '9' }
-func isIdentStart(ch byte) bool  { return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_' }
-func isIdentPart(ch byte) bool   { return isIdentStart(ch) || isDigit(ch) || ch == '.' }
-func isDurationUnit(ch byte) bool { return ch == 'h' || ch == 'm' || ch == 's' || ch == 'n' || ch == 'u' }
-func isLowerAlpha(ch byte) bool  { return ch >= 'a' && ch <= 'z' }
+func isDigit(ch byte) bool { return ch >= '0' && ch <= '9' }
+func isIdentStart(ch byte) bool {
+	return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || ch == '_'
+}
+func isIdentPart(ch byte) bool { return isIdentStart(ch) || isDigit(ch) || ch == '.' }
+func isDurationUnit(ch byte) bool {
+	return ch == 'h' || ch == 'm' || ch == 's' || ch == 'n' || ch == 'u'
+}
+func isLowerAlpha(ch byte) bool { return ch >= 'a' && ch <= 'z' }
 
 func hexVal(ch byte) (int, bool) {
 	switch {

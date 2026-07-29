@@ -234,10 +234,11 @@ here so the deltas are tracked.
   dead-code helpers deleted (`buildDeferReleasePredicate`,
   `statementsAfter`, `isImmutableValueType`, `allTools()`) when
   introducing CI.
-- [x] **Vendored `mcp-go` un-modified** — caliper now depends on the
-  trendvidia/mcp-go fork via `replace` directive; the only patch
-  (panic recovery in `toolCallWorker`) lives in the fork as a
-  trackable upstream change.
+- [x] **Vendored `mcp-go` un-modified** — the sole patch (panic
+  recovery in the stdio tool-call worker) was upstreamed in
+  mark3labs/mcp-go#882 and shipped in v0.54.0, so the interim
+  trendvidia/mcp-go fork and its `replace` directive are gone.
+  caliper vendors stock upstream `v0.57.0`.
 
 ## Phase 6 — Coccinelle Parity
 

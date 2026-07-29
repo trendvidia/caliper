@@ -81,8 +81,11 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 // syncWriter wraps a writer with a mutex to prevent concurrent writes
-// from corrupting output. The mcp-go StdioServer writes from both
-// processMessage and handleNotifications without synchronization.
+// from corrupting output. mcp-go's StdioServer writes from
+// processMessage, handleNotifications and toolCallWorker; as of v0.57.0
+// it serializes those itself with an internal writeMu, so this is
+// belt-and-braces — it also covers anything writing to os.Stdout from
+// outside the StdioServer.
 type syncWriter struct {
 	mu sync.Mutex
 	w  io.Writer

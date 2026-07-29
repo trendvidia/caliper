@@ -1,3 +1,6 @@
+// Copyright 2026 TrendVidia LLC
+// SPDX-License-Identifier: MIT
+
 package pxf
 
 import "fmt"

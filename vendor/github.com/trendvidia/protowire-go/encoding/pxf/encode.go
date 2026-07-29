@@ -1,3 +1,6 @@
+// Copyright 2026 TrendVidia LLC
+// SPDX-License-Identifier: MIT
+
 package pxf
 
 import (
@@ -68,6 +71,7 @@ type encoder struct {
 	nullMaskFd   protoreflect.FieldDescriptor // cached, top-level only
 	nullSet      map[string]bool              // cached, top-level only
 	pathPrefix   string                       // dotted path prefix for nested null lookup
+	skipKeyFd    protoreflect.FieldDescriptor // key field to omit from the NEXT encodeMessage call (keyed-block entry body, draft -01 §3.13)
 	scratch      [64]byte                     // scratch buffer for number formatting
 }
 
@@ -87,8 +91,18 @@ func (e *encoder) writeFieldPrefix(level int, name protoreflect.Name) {
 func (e *encoder) encodeMessage(msg protoreflect.Message, level int) error {
 	fields := msg.Descriptor().Fields()
 
+	// A pending skipKeyFd applies to exactly this body: the entry name
+	// of a keyed-block entry already carries the key field's value, so
+	// the field is not additionally emitted inside the block (draft -01
+	// §3.13). Consume it so nested messages don't inherit the skip.
+	skipKey := e.skipKeyFd
+	e.skipKeyFd = nil
+
 	for i := range fields.Len() {
 		fd := fields.Get(i)
+		if skipKey != nil && fd == skipKey {
+			continue
+		}
 
 		// Skip the _null FieldMask field itself.
 		if e.nullMaskFd != nil && e.pathPrefix == "" && fd.Number() == e.nullMaskFd.Number() {
@@ -198,6 +212,18 @@ func (e *encoder) encodeMessageField(fd protoreflect.FieldDescriptor, sub protor
 		e.buf.WriteByte('\n')
 		return nil
 	}
+	// pxf.Secret: scalar shorthand iff hint and fingerprint are empty
+	// (otherwise we would silently drop authoring metadata on re-emit).
+	// The block-form fallthrough handles the metadata case.
+	if isSecret(mdesc) && !secretHasMetadata(sub) {
+		innerFd := mdesc.Fields().ByName("value")
+		e.writeFieldPrefix(level, fd.Name())
+		if err := e.writeScalar(innerFd, sub.Get(innerFd)); err != nil {
+			return err
+		}
+		e.buf.WriteByte('\n')
+		return nil
+	}
 	// Any sugar: @type + inline fields
 	if isAny(mdesc) && e.resolver != nil {
 		encoded, err := e.tryEncodeAny(fd, sub, level)
@@ -227,6 +253,16 @@ func (e *encoder) encodeListField(fd protoreflect.FieldDescriptor, val protorefl
 	list := val.List()
 	if list.Len() == 0 && !e.emitDefaults {
 		return nil
+	}
+
+	// Keyed repeated field (draft -01 §3.13): emit the keyed block form
+	// whenever every element's key is present, non-empty, and distinct;
+	// otherwise fall through to the anonymous list form (elements with
+	// absent or duplicate keys can only be represented anonymously).
+	if keyFd := KeyField(fd); keyFd != nil && list.Len() > 0 {
+		if keyedFormEligible(list, keyFd) {
+			return e.encodeKeyedList(fd, list, keyFd, level)
+		}
 	}
 
 	e.writeFieldPrefix(level, fd.Name())
@@ -262,6 +298,12 @@ func (e *encoder) encodeListField(fd protoreflect.FieldDescriptor, val protorefl
 			} else if isBigFloat(mdesc) {
 				e.writeIndent(level + 1)
 				e.buf.WriteString(formatBigFloat(sub))
+			} else if isSecret(mdesc) && !secretHasMetadata(sub) {
+				innerFd := mdesc.Fields().ByName("value")
+				e.writeIndent(level + 1)
+				if err := e.writeScalar(innerFd, sub.Get(innerFd)); err != nil {
+					return err
+				}
 			} else {
 				e.writeIndent(level + 1)
 				e.buf.WriteString("{\n")
@@ -286,6 +328,54 @@ func (e *encoder) encodeListField(fd protoreflect.FieldDescriptor, val protorefl
 
 	e.writeIndent(level)
 	e.buf.WriteString("]\n")
+	return nil
+}
+
+// keyedFormEligible reports whether every element of list has a
+// non-empty key value that is distinct within the collection — the
+// draft -01 §3.13 condition for emitting the keyed block form.
+func keyedFormEligible(list protoreflect.List, keyFd protoreflect.FieldDescriptor) bool {
+	seen := make(map[string]struct{}, list.Len())
+	for i := range list.Len() {
+		key := list.Get(i).Message().Get(keyFd).String()
+		if key == "" {
+			return false
+		}
+		if _, dup := seen[key]; dup {
+			return false
+		}
+		seen[key] = struct{}{}
+	}
+	return true
+}
+
+// encodeKeyedList emits a keyed repeated field in the keyed block form:
+// one named block per element, in list order. Entry names are written
+// unquoted when identifier-safe and quoted otherwise; the key field is
+// not additionally emitted inside the entry's block.
+func (e *encoder) encodeKeyedList(fd protoreflect.FieldDescriptor, list protoreflect.List, keyFd protoreflect.FieldDescriptor, level int) error {
+	e.writeIndent(level)
+	e.buf.WriteString(string(fd.Name()))
+	e.buf.WriteString(" {\n")
+	for i := range list.Len() {
+		sub := list.Get(i).Message()
+		key := sub.Get(keyFd).String()
+		e.writeIndent(level + 1)
+		if identSafeEntryName(key) {
+			e.buf.WriteString(key)
+		} else {
+			e.writeQuotedString(key)
+		}
+		e.buf.WriteString(" {\n")
+		e.skipKeyFd = keyFd
+		if err := e.encodeMessage(sub, level+2); err != nil {
+			return err
+		}
+		e.writeIndent(level + 1)
+		e.buf.WriteString("}\n")
+	}
+	e.writeIndent(level)
+	e.buf.WriteString("}\n")
 	return nil
 }
 
@@ -318,10 +408,85 @@ func (e *encoder) encodeMapField(fd protoreflect.FieldDescriptor, val protorefle
 
 	for _, kv := range entries {
 		if valFd.Kind() == protoreflect.MessageKind || valFd.Kind() == protoreflect.GroupKind {
+			sub := kv.val.Message()
+			mdesc := valFd.Message()
+
+			// WKT scalar emission in map-value position. Mirrors the
+			// equivalent block in encodeMessageField / encodeListField
+			// so a Timestamp / Duration / wrapper / BigInt / Decimal /
+			// BigFloat / Secret value renders as `key: <scalar>`
+			// rather than `key: { value = <scalar> }`. Secret falls
+			// back to block form when hint or fingerprint is set, so
+			// authoring metadata round-trips.
+			if isTimestamp(mdesc) {
+				t := readTimestamp(sub)
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				e.buf.WriteString(t.Format(time.RFC3339Nano))
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isDuration(mdesc) {
+				d := readDuration(sub)
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				e.buf.WriteString(d.String())
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isWrapperType(mdesc) {
+				innerFd := mdesc.Fields().ByName("value")
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				if err := e.writeScalar(innerFd, sub.Get(innerFd)); err != nil {
+					return err
+				}
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isBigInt(mdesc) {
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				e.buf.WriteString(formatBigInt(sub))
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isDecimal(mdesc) {
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				e.buf.WriteString(readDecimalStr(sub))
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isBigFloat(mdesc) {
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				e.buf.WriteString(formatBigFloat(sub))
+				e.buf.WriteByte('\n')
+				continue
+			}
+			if isSecret(mdesc) && !secretHasMetadata(sub) {
+				innerFd := mdesc.Fields().ByName("value")
+				e.writeIndent(level + 1)
+				e.buf.WriteString(kv.keyStr)
+				e.buf.WriteString(": ")
+				if err := e.writeScalar(innerFd, sub.Get(innerFd)); err != nil {
+					return err
+				}
+				e.buf.WriteByte('\n')
+				continue
+			}
+
 			e.writeIndent(level + 1)
 			e.buf.WriteString(kv.keyStr)
 			e.buf.WriteString(": {\n")
-			if err := e.encodeMessage(kv.val.Message(), level+2); err != nil {
+			if err := e.encodeMessage(sub, level+2); err != nil {
 				return err
 			}
 			e.writeIndent(level + 1)
