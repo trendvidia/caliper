@@ -30,9 +30,10 @@ import (
 var Version = ""
 
 // resolveVersion returns the Version override if set, otherwise derives
-// a version string from runtime/debug.BuildInfo (e.g., "dev-1a2b3c4"
-// or "dev-1a2b3c4-dirty"). Falls back to "dev" if no VCS metadata is
-// embedded (go run, go install with no VCS, etc.).
+// a version string from runtime/debug.BuildInfo: the module version for
+// `go install pkg@v1.2.3` builds, else a VCS revision (e.g.
+// "dev-1a2b3c4" or "dev-1a2b3c4-dirty"). Falls back to "dev" when
+// neither is embedded (go run, go build from a tarball, etc.).
 func resolveVersion() string {
 	if Version != "" {
 		return Version
@@ -56,10 +57,16 @@ func resolveVersion() string {
 			}
 		}
 	}
-	if rev == "" {
-		return "dev"
+	if rev != "" {
+		return "dev-" + rev + dirty
 	}
-	return "dev-" + rev + dirty
+	// No VCS metadata means this was not built from a working tree.
+	// `go install pkg@version` is the case that matters: it builds from
+	// the module cache and stamps the exact released version here.
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return "dev"
 }
 
 func main() {

@@ -5,6 +5,22 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- **`go install`-ed binaries report their version** instead of `dev`.
+  `resolveVersion` only consulted `vcs.revision`, but `go install
+  pkg@version` builds from the module cache and records no `vcs.*`
+  settings at all — it stamps `Main.Version` instead. Now checked as a
+  fallback, after the VCS path so local builds keep reporting
+  `dev-<rev>[-dirty]` as documented. Affects both binaries.
+- **Download instructions that actually work.** `docs/getting-started.md`
+  told users to `curl` a `github.com/.../releases/download/...` URL.
+  That returns 404 for `trendvidia/caliper` even with a valid token,
+  because those URLs authenticate by session cookie rather than by
+  header — private-repo assets must come from the REST asset endpoint.
+  Documented via `gh release download`, with a raw-`curl` equivalent and
+  a `checksums.txt` verification step.
+
 ## v1.1.1 — 2026-07-29
 
 ### Fixed

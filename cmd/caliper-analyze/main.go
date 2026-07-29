@@ -77,10 +77,16 @@ func resolveVersion() string {
 			}
 		}
 	}
-	if rev == "" {
-		return "dev"
+	if rev != "" {
+		return "dev-" + rev + dirty
 	}
-	return "dev-" + rev + dirty
+	// No VCS metadata means this was not built from a working tree.
+	// `go install pkg@version` is the case that matters: it builds from
+	// the module cache and stamps the exact released version here.
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		return v
+	}
+	return "dev"
 }
 
 func main() {

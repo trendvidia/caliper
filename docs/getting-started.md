@@ -43,26 +43,58 @@ users only need the first.
 
 Each release also ships `checksums.txt` for verification.
 
+`trendvidia/caliper` is a private repository, so release assets need an
+authenticated download. Plain `curl` against a
+`github.com/.../releases/download/...` URL returns 404 even with a token,
+because those URLs authenticate by session cookie rather than by header.
+
 #### macOS / Linux
 
+The `gh` CLI handles the authentication for you:
+
 ```bash
-# Download (replace PLATFORM and ARCH with your values)
-curl -Lo caliper https://github.com/trendvidia/caliper/releases/latest/download/caliper-PLATFORM-ARCH
-chmod +x caliper
-sudo mv caliper /usr/local/bin/
+# Replace PLATFORM and ARCH with your values, e.g. darwin-arm64
+gh release download --repo trendvidia/caliper -p caliper-PLATFORM-ARCH
+chmod +x caliper-PLATFORM-ARCH
+sudo mv caliper-PLATFORM-ARCH /usr/local/bin/caliper
 ```
 
 Example for Apple Silicon Mac:
 
 ```bash
-curl -Lo caliper https://github.com/trendvidia/caliper/releases/latest/download/caliper-darwin-arm64
-chmod +x caliper
-sudo mv caliper /usr/local/bin/
+gh release download --repo trendvidia/caliper -p caliper-darwin-arm64
+chmod +x caliper-darwin-arm64
+sudo mv caliper-darwin-arm64 /usr/local/bin/caliper
+```
+
+Without `gh`, use the REST asset endpoint, which does accept a token
+header:
+
+```bash
+ASSET_ID=$(curl -s -H "Authorization: Bearer $GITHUB_TOKEN" \
+  https://api.github.com/repos/trendvidia/caliper/releases/latest \
+  | jq -r '.assets[] | select(.name=="caliper-darwin-arm64") | .id')
+
+curl -Lo caliper -H "Authorization: Bearer $GITHUB_TOKEN" \
+  -H "Accept: application/octet-stream" \
+  "https://api.github.com/repos/trendvidia/caliper/releases/assets/$ASSET_ID"
+chmod +x caliper && sudo mv caliper /usr/local/bin/
+```
+
+Verify against `checksums.txt` from the same release:
+
+```bash
+gh release download --repo trendvidia/caliper -p checksums.txt
+shasum -a 256 -c checksums.txt --ignore-missing
 ```
 
 #### Windows
 
-Download `caliper-windows-amd64.exe` (or `arm64`) from the releases page, rename it to `caliper.exe`, and add its directory to your `PATH`.
+```powershell
+gh release download --repo trendvidia/caliper -p caliper-windows-amd64.exe
+```
+
+Rename it to `caliper.exe` and add its directory to your `PATH`.
 
 ### Homebrew (macOS)
 
