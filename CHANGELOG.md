@@ -25,10 +25,11 @@ All notable user-visible changes to caliper. Format roughly follows
   only decodes `.caliper.pxf` config files, where the difference is
   not measurable. The previous go.mod comment claiming the fork was
   needed to keep the vendored copy *compilable* was incorrect.
-- Building from a sibling checkout is no longer required. Note that
-  `go mod tidy`/`go get` now need `GOPRIVATE=github.com/trendvidia/*`
-  and credentials to reach protowire-go; ordinary builds do not, since
-  it is vendored.
+- Building from a sibling checkout is no longer required, and no
+  credentials are needed either: `trendvidia/protowire-go` and
+  `trendvidia/protobuf-go` are public, so both resolve anonymously from
+  the module proxy. `GOPRIVATE` is not required for any caliper
+  dependency.
 
 ## v1.1.0 — 2026-07-29
 
