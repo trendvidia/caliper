@@ -59,11 +59,16 @@ versioning until the project tags its first release.
 
 ### Transport
 
-- Replaced vendored `mcp-go` with a local fork
-  (`replace github.com/mark3labs/mcp-go => ../mcp-go`). The previous
-  vendored copy had local patches that drifted from upstream; the
-  fork picks up upstream's worker-pool architecture for concurrent
-  tool calls and adds a panic-recovery patch in `toolCallWorker`.
+- **`mcp-go` back on upstream** at `v0.57.0`, un-patched and un-forked.
+  The interim `replace github.com/mark3labs/mcp-go => ../mcp-go` is
+  gone: the fork's only patch (panic recovery in the stdio tool-call
+  worker) landed upstream in
+  [mark3labs/mcp-go#882](https://github.com/mark3labs/mcp-go/pull/882),
+  released in v0.54.0, and upstream's version replies `INTERNAL_ERROR`
+  to the offending call rather than dropping the message. The `replace`
+  also leaked into every `trendvidia/go.work` member, so sibling repos
+  were silently compiling ~v0.49 code under a v0.57.0 label; they now
+  get the version they ask for.
 - **stderr tee** to `$TMPDIR/caliper-mcp-YYYY-MM-DD.log` with line
   timestamps — useful for diagnosing MCP disconnects across
   reconnects.

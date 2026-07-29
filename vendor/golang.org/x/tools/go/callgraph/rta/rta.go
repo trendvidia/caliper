@@ -371,7 +371,7 @@ func (r *rta) interfaces(C types.Type) []*types.Interface {
 
 		// Ascertain set of interfaces C implements
 		// and update the 'implements' relation.
-		r.interfaceTypes.Iterate(func(I types.Type, v interface{}) {
+		r.interfaceTypes.Iterate(func(I types.Type, v any) {
 			iinfo := v.(*interfaceTypeInfo)
 			if I := types.Unalias(I).(*types.Interface); implements(cinfo, iinfo) {
 				iinfo.implementations = append(iinfo.implementations, C)
@@ -400,7 +400,7 @@ func (r *rta) implementations(I *types.Interface) []types.Type {
 
 		// Ascertain set of concrete types that implement I
 		// and update the 'implements' relation.
-		r.concreteTypes.Iterate(func(C types.Type, v interface{}) {
+		r.concreteTypes.Iterate(func(C types.Type, v any) {
 			cinfo := v.(*concreteTypeInfo)
 			if implements(cinfo, iinfo) {
 				cinfo.implements = append(cinfo.implements, I)
@@ -469,9 +469,9 @@ func (r *rta) addRuntimeType(T types.Type, skip bool) {
 	}
 
 	// Recursion over signatures of each exported method.
-	for i := 0; i < mset.Len(); i++ {
-		if mset.At(i).Obj().Exported() {
-			sig := mset.At(i).Type().(*types.Signature)
+	for method := range mset.Methods() {
+		if method.Obj().Exported() {
+			sig := method.Type().(*types.Signature)
 			r.addRuntimeType(sig.Params(), true)  // skip the Tuple itself
 			r.addRuntimeType(sig.Results(), true) // skip the Tuple itself
 		}
@@ -541,8 +541,8 @@ func (r *rta) addRuntimeType(T types.Type, skip bool) {
 func fingerprint(mset *types.MethodSet) uint64 {
 	var space [64]byte
 	var mask uint64
-	for i := 0; i < mset.Len(); i++ {
-		method := mset.At(i).Obj()
+	for method := range mset.Methods() {
+		method := method.Obj()
 		sig := method.Type().(*types.Signature)
 		sum := crc32.ChecksumIEEE(fmt.Appendf(space[:], "%s/%d/%d",
 			method.Id(),

@@ -92,11 +92,11 @@ func WithQueueSize(size int) StdioOption {
 
 // stdioSession is a static client session, since stdio has only one client.
 type stdioSession struct {
+	clientInfoStore // provides Get/SetClientInfo and Get/SetClientCapabilities via method promotion
+
 	notifications       chan mcp.JSONRPCNotification
 	initialized         atomic.Bool
 	loggingLevel        atomic.Value
-	clientInfo          atomic.Value                        // stores session-specific client info
-	clientCapabilities  atomic.Value                        // stores session-specific client capabilities
 	writer              io.Writer                           // for sending requests to client
 	requestID           atomic.Int64                        // for generating unique request IDs
 	mu                  sync.RWMutex                        // protects writer
@@ -140,32 +140,6 @@ func (s *stdioSession) Initialize() {
 
 func (s *stdioSession) Initialized() bool {
 	return s.initialized.Load()
-}
-
-func (s *stdioSession) GetClientInfo() mcp.Implementation {
-	if value := s.clientInfo.Load(); value != nil {
-		if clientInfo, ok := value.(mcp.Implementation); ok {
-			return clientInfo
-		}
-	}
-	return mcp.Implementation{}
-}
-
-func (s *stdioSession) SetClientInfo(clientInfo mcp.Implementation) {
-	s.clientInfo.Store(clientInfo)
-}
-
-func (s *stdioSession) GetClientCapabilities() mcp.ClientCapabilities {
-	if value := s.clientCapabilities.Load(); value != nil {
-		if clientCapabilities, ok := value.(mcp.ClientCapabilities); ok {
-			return clientCapabilities
-		}
-	}
-	return mcp.ClientCapabilities{}
-}
-
-func (s *stdioSession) SetClientCapabilities(clientCapabilities mcp.ClientCapabilities) {
-	s.clientCapabilities.Store(clientCapabilities)
 }
 
 func (s *stdioSession) SetLogLevel(level mcp.LoggingLevel) {
@@ -465,14 +439,7 @@ func (s *StdioServer) processInputStream(ctx context.Context, reader *bufio.Read
 	}
 }
 
-// toolCallWorker processes tool calls from the queue.
-//
-// A panic inside HandleMessage (e.g., from a buggy tool implementation
-// that the user has registered, or a race in shared state) would
-// otherwise propagate up the goroutine and kill the whole server. This
-// is especially painful for stdio transports where the parent has no
-// way to relaunch the server inside a session. Recover, log, and let
-// the worker continue processing the next message.
+// toolCallWorker processes tool calls from the queue
 func (s *StdioServer) toolCallWorker(ctx context.Context) {
 	defer s.workerWg.Done()
 
@@ -483,27 +450,24 @@ func (s *StdioServer) toolCallWorker(ctx context.Context) {
 				// Channel closed, exit worker
 				return
 			}
-			s.processToolWorkSafely(work)
+			// Process the tool call with panic recovery so a single
+			// panicking handler does not kill the worker permanently.
+			response := func() (resp mcp.JSONRPCMessage) {
+				defer func() {
+					if r := recover(); r != nil {
+						s.errLogger.Printf("panic recovered in stdio tool call worker: %v", r)
+						resp = createErrorResponse(nil, mcp.INTERNAL_ERROR, fmt.Sprintf("internal panic: %v", r))
+					}
+				}()
+				return s.server.HandleMessage(work.ctx, work.message)
+			}()
+			if response != nil {
+				if err := s.writeResponse(response, work.writer); err != nil {
+					s.errLogger.Printf("Error writing tool response: %v", err)
+				}
+			}
 		case <-ctx.Done():
 			return
-		}
-	}
-}
-
-// processToolWorkSafely runs a single tool call with panic recovery so
-// one buggy handler doesn't kill the worker (and by extension the
-// process under stdio transports).
-func (s *StdioServer) processToolWorkSafely(work *toolCallWork) {
-	defer func() {
-		if r := recover(); r != nil {
-			s.errLogger.Printf("Recovered panic in tool call worker: %v", r)
-		}
-	}()
-
-	response := s.server.HandleMessage(work.ctx, work.message)
-	if response != nil {
-		if err := s.writeResponse(response, work.writer); err != nil {
-			s.errLogger.Printf("Error writing tool response: %v", err)
 		}
 	}
 }
@@ -620,7 +584,7 @@ func (s *StdioServer) processMessage(
 	var baseMessage struct {
 		Method string `json:"method"`
 	}
-	if json.Unmarshal(rawMessage, &baseMessage) == nil && baseMessage.Method == "tools/call" {
+	if json.Unmarshal(rawMessage, &baseMessage) == nil && baseMessage.Method == string(mcp.MethodToolsCall) {
 		// Queue tool calls for processing by workers
 		select {
 		case s.toolCallQueue <- &toolCallWork{

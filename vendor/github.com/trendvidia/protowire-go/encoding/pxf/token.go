@@ -1,3 +1,6 @@
+// Copyright 2026 TrendVidia LLC
+// SPDX-License-Identifier: MIT
+
 package pxf
 
 import "fmt"
@@ -25,19 +28,25 @@ const (
 	RBRACE   // }
 	LBRACKET // [
 	RBRACKET // ]
+	LPAREN   // (   used by @dataset column list and row tuples
+	RPAREN   // )
 	EQUALS   // =
 	COLON    // :
 	COMMA    // ,
 
-	AT_TYPE // @type
+	AT_TYPE      // @type — body's message type, no inline block
+	AT_DATASET   // @dataset — row-oriented bulk-data directive (draft §3.4.4)
+	AT_PROTO     // @proto — embedded protobuf schema (draft §3.4.5)
+	AT_DIRECTIVE // @<name> for any non-reserved name — Value holds the name (without @)
 )
 
 var tokenNames = map[TokenKind]string{
 	EOF: "EOF", ILLEGAL: "ILLEGAL", NEWLINE: "newline", COMMENT: "comment",
 	IDENT: "identifier", STRING: "string", INT: "integer", FLOAT: "float",
 	BOOL: "bool", NULL: "null", BYTES: "bytes", TIMESTAMP: "timestamp", DURATION: "duration",
-	LBRACE: "{", RBRACE: "}", LBRACKET: "[", RBRACKET: "]",
-	EQUALS: "=", COLON: ":", COMMA: ",", AT_TYPE: "@type",
+	LBRACE: "{", RBRACE: "}", LBRACKET: "[", RBRACKET: "]", LPAREN: "(", RPAREN: ")",
+	EQUALS: "=", COLON: ":", COMMA: ",",
+	AT_TYPE: "@type", AT_DATASET: "@dataset", AT_PROTO: "@proto", AT_DIRECTIVE: "@directive",
 }
 
 func (k TokenKind) String() string {
@@ -48,9 +57,14 @@ func (k TokenKind) String() string {
 }
 
 // Position represents a location in source text.
+//
+// Offset is the byte index into the input where the token starts. It
+// is populated by the lexer and used by callers that need to slice
+// the original byte stream (e.g. directive body extraction).
 type Position struct {
 	Line   int
 	Column int
+	Offset int
 }
 
 func (p Position) String() string {
