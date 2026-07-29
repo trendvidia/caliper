@@ -18,7 +18,6 @@ linters:
     # of truth for this codebase. Running both produces duplicate noise.
   exclusions:
     paths:
-      - vendor
       - testdata
       - pkg/caliperpb/.*\.pb\.go$
 
