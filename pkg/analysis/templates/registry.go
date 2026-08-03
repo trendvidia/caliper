@@ -33,6 +33,26 @@ type Template interface {
 	Analyze(ctx *TemplateContext) []Finding
 }
 
+// WholeProgramTemplate is the interface for analyses that need the whole
+// program at once — cross-method rules that reason over a type's method
+// set rather than a single function body (paired lifecycle calls,
+// capture-vs-re-read). Distinct from Template because there is no single
+// Func/CFG context to build.
+type WholeProgramTemplate interface {
+	// Name returns the template identifier.
+	Name() string
+
+	// AnalyzeProgram runs the template across all loaded packages.
+	AnalyzeProgram(engine *analysis.Engine) []Finding
+}
+
+// RunWholeProgram runs a whole-program template and applies
+// //caliper:ignore suppressions, mirroring RunTemplate's contract for
+// per-function templates.
+func RunWholeProgram(engine *analysis.Engine, tmpl WholeProgramTemplate) []Finding {
+	return filterSuppressed(engine, tmpl.AnalyzeProgram(engine))
+}
+
 // TemplateContext provides everything a template needs.
 type TemplateContext struct {
 	Engine     *analysis.Engine

@@ -255,4 +255,8 @@ func (s *Server) registerTools() {
 	addRO(findSliceAppendRaceTool, s.handleFindSliceAppendRace)
 	addRO(checkInterfaceTool, s.handleCheckInterface)
 	addRO(explainFindingTool, s.handleExplainFinding)
+
+	// Cross-method lifecycle rules (issue #8).
+	addRO(checkPairedCallsTool, s.handleCheckPairedCalls)
+	addRO(findStaleCaptureTool, s.handleFindStaleCapture)
 }

@@ -62,6 +62,20 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 		}
 	}
 
+	// Enclosing-context filters (issue #8): "inside" / "not_inside".
+	inside, err := patterns.ParseContextSpecs(stringSliceParam(req, "inside"))
+	if err != nil {
+		return errorResult("Invalid inside spec: %v", err), nil
+	}
+	notInside, err := patterns.ParseContextSpecs(stringSliceParam(req, "not_inside"))
+	if err != nil {
+		return errorResult("Invalid not_inside spec: %v", err), nil
+	}
+	ctxFilter := &patterns.ContextFilter{Inside: inside, NotInside: notInside}
+	if !ctxFilter.Empty() && boolParam(req, "negative") {
+		return errorResult("inside/not_inside cannot be combined with negative mode: absence is checked per function, not per match context"), nil
+	}
+
 	prog := newProgress(ctx, req)
 	engine, release, err := s.getEngineWithProgress(path, prog)
 	if err != nil {
@@ -104,6 +118,9 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 	engine.Walk(func(pkg *packages.Package, file *ast.File, node ast.Node, info *types.Info) bool {
 		bindings := p.MatchNode(node, info)
 		if bindings == nil {
+			return true
+		}
+		if !ctxFilter.Allows(file, node, info) {
 			return true
 		}
 
@@ -1195,5 +1212,63 @@ func (s *Server) handleFindDeferInLoop(ctx context.Context, req mcpsdk.CallToolR
 
 	tmpl := &templates.DeferInLoop{}
 	findings := s.runTemplate(path, engine, tmpl)
+	return s.findingsResult(findings, req), nil
+}
+
+func (s *Server) handleCheckPairedCalls(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	firstPattern := stringParam(req, "first_pattern")
+	secondPattern := stringParam(req, "second_pattern")
+	path := stringParam(req, "path")
+	path = s.defaultPath(path)
+
+	tmpl, err := templates.NewPairedCalls(firstPattern, secondPattern)
+	if err != nil {
+		return errorResult("Invalid pattern: %v", err), nil
+	}
+	tmpl.IncludeConstructed = boolParamDefault(req, "include_constructed", true)
+
+	prog := newProgress(ctx, req)
+	engine, release, err := s.getEngineWithProgress(path, prog)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+	defer release()
+
+	if prog.active() {
+		prog.send(2, 3, "Checking paired calls across method sets...")
+	}
+	findings := templates.RunWholeProgram(engine, tmpl)
+	if prog.active() {
+		prog.send(3, 3, "Done")
+	}
+	return s.findingsResult(findings, req), nil
+}
+
+func (s *Server) handleFindStaleCapture(ctx context.Context, req mcpsdk.CallToolRequest) (*mcpsdk.CallToolResult, error) {
+	captureMethod := stringParam(req, "capture_method")
+	rereadMethod := stringParam(req, "reread_method")
+	path := stringParam(req, "path")
+	path = s.defaultPath(path)
+
+	tmpl, err := templates.NewStaleCapture(captureMethod, rereadMethod)
+	if err != nil {
+		return errorResult("Invalid parameters: %v", err), nil
+	}
+	tmpl.ExportedOnly = boolParamDefault(req, "exported_only", true)
+
+	prog := newProgress(ctx, req)
+	engine, release, err := s.getEngineWithProgress(path, prog)
+	if err != nil {
+		return errorResult("Failed to load packages: %v", err), nil
+	}
+	defer release()
+
+	if prog.active() {
+		prog.send(2, 3, "Checking captured fields for re-reads...")
+	}
+	findings := templates.RunWholeProgram(engine, tmpl)
+	if prog.active() {
+		prog.send(3, 3, "Done")
+	}
 	return s.findingsResult(findings, req), nil
 }

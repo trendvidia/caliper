@@ -38,6 +38,25 @@ TYPE CONSTRAINTS (optional):
   setting type_constraints to {"x": "*os.File"} with pattern "$x.Close()"
   will only match Close() calls on *os.File values, not on other types.
 
+ENCLOSING-CONTEXT FILTERS (optional):
+  inside / not_inside restrict matches by their lexical surroundings.
+  Each entry is one of:
+    "go"                     — inside a go statement
+    "defer"                  — inside a defer statement
+    "callback_of:<pattern>"  — inside a func literal passed to a matching
+                               call (e.g. "callback_of:time.AfterFunc")
+    "call:<pattern>"         — inside the arguments of a matching call
+                               (e.g. "call:ui.Do")
+  A match passes when it is inside AT LEAST ONE of the "inside" entries
+  (OR semantics) and inside NONE of the "not_inside" entries. Context is
+  lexical: code in a named function called from a go statement elsewhere
+  does not count as "inside go".
+  Example — find widget mutations on background goroutines that are not
+  wrapped in the UI-thread helper:
+    pattern:    "$w.SetText($args...)"
+    inside:     ["go", "callback_of:time.AfterFunc"]
+    not_inside: ["call:ui.Do"]
+
 USE THIS TOOL WHEN: you want to find specific code patterns, API usages,
 or structural idioms across a codebase. For control-flow properties
 (resource leaks, missing error checks), use the specialized tools instead.
@@ -65,6 +84,16 @@ infallible block, severity overrides, and rule enable/disable list apply.
 				"type":                 "object",
 				"description":          "Map of metavariable name → regex. Only matches where the bound identifier name matches the regex. Example: {\"fn\": \"^Test.*\", \"x\": \"^(db|conn)$\"}",
 				"additionalProperties": map[string]any{"type": "string"},
+			},
+			"inside": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Enclosing-context specs; a match must be inside at least one. Entries: \"go\", \"defer\", \"callback_of:<pattern>\", \"call:<pattern>\". See tool description.",
+			},
+			"not_inside": map[string]any{
+				"type":        "array",
+				"items":       map[string]any{"type": "string"},
+				"description": "Enclosing-context specs; a match inside any of these is excluded. Same entry syntax as \"inside\".",
 			},
 			"negative": map[string]any{
 				"type":        "boolean",
@@ -1060,5 +1089,123 @@ infallible block, severity overrides, and rule enable/disable list apply.
 				"description": "File or directory to analyze. Defaults to current working directory.",
 			},
 		},
+	},
+}
+
+// --------------------------------------------------------------------------
+// 6. Cross-method lifecycle rules — type-scoped analyses (issue #8)
+// --------------------------------------------------------------------------
+
+var checkPairedCallsTool = mcpsdk.Tool{
+	Name: "check_paired_calls",
+	Description: `Check a type-scoped pairing rule: if a pattern matches in ANY method of a
+type, a second pattern must match SOMEWHERE in that type's method set.
+This is the cross-method complement to check_path_property — the two
+halves of the pair live in different methods, so no within-one-function
+path property can express it.
+
+CLASSIC USE CASE (GUI toolkits): every Animation.Start() in a widget's
+methods needs a reachable Stop() in a sibling method or in the widget's
+renderer:
+  first_pattern:  "$x.Start()"
+  second_pattern: "$x.Stop()"
+
+HOW PAIRING WORKS:
+  - Matches of first_pattern are grouped by the receiver type of the
+    method they appear in.
+  - The search scope for second_pattern is that type's whole method set,
+    plus (by default) the method sets of companion types constructed by
+    its methods via composite literals — this covers the widget→renderer
+    split, where Start lives on the widget and Stop in the renderer's
+    Destroy.
+  - When both patterns share a metavariable (the $x above) and the first
+    match binds it to a field of the receiver (w.anim), pairing is by
+    field identity: a Stop() on a DIFFERENT field does not pair. A match
+    whose binding cannot be resolved to a field still pairs leniently,
+    keeping false positives low.
+
+Reports one finding per first-pattern match that has no pairing second
+match. Suppress individual sites with //caliper:ignore.
+
+USE THIS TOOL WHEN: enforcing lifecycle pairs across a type's methods —
+Start/Stop, Open/Close, Subscribe/Unsubscribe, AddListener/RemoveListener.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"first_pattern": map[string]any{
+				"type":        "string",
+				"description": "Pattern whose match triggers the pairing requirement (e.g. \"$x.Start()\"). Same syntax as find_pattern.",
+			},
+			"second_pattern": map[string]any{
+				"type":        "string",
+				"description": "Pattern that must match somewhere in the type's method set (e.g. \"$x.Stop()\").",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"include_constructed": map[string]any{
+				"type":        "boolean",
+				"description": "Also search companion types constructed by the receiver type's methods (the widget→renderer link). Default: true.",
+			},
+		},
+		Required: []string{"first_pattern", "second_pattern"},
+	},
+}
+
+var findStaleCaptureTool = mcpsdk.Tool{
+	Name: "find_stale_capture",
+	Description: `Find fields captured (copied) in one method and never re-read in another,
+over a type's whole method set.
+
+CLASSIC USE CASE (GUI toolkits): a renderer that copies a widget's
+exported slice field in CreateRenderer must re-read it in Refresh —
+otherwise user mutations of the field after creation are invisible until
+the renderer is rebuilt:
+  capture_method: "CreateRenderer"
+  reread_method:  "Refresh"
+
+HOW IT WORKS:
+  - For each type declaring capture_method, the tool collects fields of
+    that type which the method copies into an assignment or composite
+    literal (e.g. "&renderer{segments: w.Segments}").
+  - The re-read scope is reread_method on the type itself and on any
+    companion type constructed inside capture_method (the renderer).
+  - A captured field never read in the re-read scope is reported. Types
+    with no reread_method anywhere in scope are skipped entirely.
+  - By default only EXPORTED fields are checked — those are the ones
+    users of the type can mutate after creation.
+
+USE THIS TOOL WHEN: auditing create/refresh or snapshot/sync method
+pairs where stale copies of public state cause missed updates.
+
+Respects .caliper.pxf walking up from the analysis path; the project's
+infallible block, severity overrides, and rule enable/disable list apply.
+`,
+	InputSchema: mcpsdk.ToolInputSchema{
+		Type: "object",
+		Properties: map[string]any{
+			"capture_method": map[string]any{
+				"type":        "string",
+				"description": "Name of the method that captures fields (e.g. \"CreateRenderer\").",
+			},
+			"reread_method": map[string]any{
+				"type":        "string",
+				"description": "Name of the method that must re-read captured fields (e.g. \"Refresh\").",
+			},
+			"path": map[string]any{
+				"type":        "string",
+				"description": "File or directory to analyze. Defaults to current working directory.",
+			},
+			"exported_only": map[string]any{
+				"type":        "boolean",
+				"description": "Only check exported fields. Default: true.",
+			},
+		},
+		Required: []string{"capture_method", "reread_method"},
 	},
 }

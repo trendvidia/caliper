@@ -130,6 +130,83 @@ func example() {
 	}
 }
 
+func TestMCP_FindPattern_ContextFilters(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+type widget struct{}
+
+func (w *widget) SetText(s string) {}
+
+func do(f func()) { f() }
+
+func direct(w *widget) {
+	w.SetText("direct")
+}
+
+func background(w *widget) {
+	go func() {
+		w.SetText("goroutine")
+	}()
+}
+
+func wrapped(w *widget) {
+	go func() {
+		do(func() {
+			w.SetText("wrapped")
+		})
+	}()
+}
+`,
+	})
+
+	srv, err := NewServer("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := makeRequest(map[string]any{
+		"pattern":    "$w.SetText($msg)",
+		"path":       dir,
+		"inside":     []any{"go"},
+		"not_inside": []any{"call:do"},
+	})
+
+	result, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := resultJSON(t, result)
+	total := data["total"].(float64)
+	// Only background's SetText qualifies: direct is not inside go,
+	// wrapped is excused by the do(...) wrapper.
+	if total != 1 {
+		t.Errorf("expected 1 match, got %v", total)
+	}
+}
+
+func TestMCP_FindPattern_InvalidContextSpec(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": "package testpkg\n\nfunc f() {}\n",
+	})
+
+	srv, _ := NewServer("test")
+	req := makeRequest(map[string]any{
+		"pattern": "$x.Close()",
+		"path":    dir,
+		"inside":  []any{"goroutine"},
+	})
+
+	result, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for invalid context spec")
+	}
+}
+
 // --------------------------------------------------------------------------
 // find_type_usage
 // --------------------------------------------------------------------------
@@ -521,5 +598,125 @@ func hello() string { return "hi" }
 	content, _ := os.ReadFile(filepath.Join(dir, "code.go"))
 	if !strings.Contains(string(content), "howdy()") {
 		t.Error("expected file to contain howdy() after transform")
+	}
+}
+
+// --------------------------------------------------------------------------
+// check_paired_calls / find_stale_capture (issue #8)
+// --------------------------------------------------------------------------
+
+func TestMCP_CheckPairedCalls(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+type anim struct{}
+
+func (a *anim) Start() {}
+func (a *anim) Stop()  {}
+
+type good struct{ a *anim }
+
+func (g *good) Show() { g.a.Start() }
+func (g *good) Hide() { g.a.Stop() }
+
+type leaky struct{ a *anim }
+
+func (l *leaky) Show() { l.a.Start() }
+`,
+	})
+
+	srv, err := NewServer("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := makeRequest(map[string]any{
+		"first_pattern":  "$x.Start()",
+		"second_pattern": "$x.Stop()",
+		"path":           dir,
+	})
+
+	result, err := srv.handleCheckPairedCalls(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := resultJSON(t, result)
+	total := data["total"].(float64)
+	if total != 1 {
+		t.Errorf("expected 1 unpaired call (leaky.Show), got %v", total)
+	}
+}
+
+func TestMCP_CheckPairedCalls_InvalidPattern(t *testing.T) {
+	srv, _ := NewServer("test")
+	req := makeRequest(map[string]any{
+		"first_pattern":  "$",
+		"second_pattern": "$x.Stop()",
+	})
+	result, err := srv.handleCheckPairedCalls(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error result for invalid pattern")
+	}
+}
+
+func TestMCP_FindStaleCapture(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+type Bar struct {
+	Segments []int
+}
+
+type barRenderer struct {
+	bar      *Bar
+	segments []int
+}
+
+func (r *barRenderer) Refresh() {}
+
+func (b *Bar) CreateRenderer() *barRenderer {
+	return &barRenderer{bar: b, segments: b.Segments}
+}
+`,
+	})
+
+	srv, err := NewServer("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	req := makeRequest(map[string]any{
+		"capture_method": "CreateRenderer",
+		"reread_method":  "Refresh",
+		"path":           dir,
+	})
+
+	result, err := srv.handleFindStaleCapture(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	data := resultJSON(t, result)
+	total := data["total"].(float64)
+	if total != 1 {
+		t.Errorf("expected 1 stale capture (Bar.Segments), got %v", total)
+	}
+}
+
+func TestMCP_FindStaleCapture_MissingParams(t *testing.T) {
+	srv, _ := NewServer("test")
+	req := makeRequest(map[string]any{
+		"capture_method": "CreateRenderer",
+	})
+	result, err := srv.handleFindStaleCapture(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.IsError {
+		t.Error("expected error result when reread_method is missing")
 	}
 }

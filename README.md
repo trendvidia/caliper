@@ -62,7 +62,7 @@ For team-wide configuration, add a `.mcp.json` file to your project root:
 
 ## Tools
 
-Caliper exposes 24 MCP tools across six categories.
+Caliper exposes 26 MCP tools across seven categories.
 
 ### Bug Detection
 
@@ -95,12 +95,19 @@ Caliper exposes 24 MCP tools across six categories.
 
 | Tool | Description |
 |---|---|
-| `find_pattern` | Structural AST pattern matching with metavariables (`$x.Close()`, `if $err != nil { ... }`) |
+| `find_pattern` | Structural AST pattern matching with metavariables (`$x.Close()`, `if $err != nil { ... }`), plus `inside`/`not_inside` enclosing-context filters (`go`, `defer`, `callback_of:<pattern>`, `call:<pattern>`) |
 | `find_type_usage` | All usages of a type: instantiation, argument, return, field, type assertion |
 | `find_call_sites` | All callers of a function via call graph analysis (CHA/RTA/VTA) |
 | `check_path_property` | Generic CFG path properties: always-before, always-after, never-between, dominates |
 | `check_interface` | Verify a type satisfies an interface, report missing methods and signature mismatches |
 | `list_equivalences` | Show semantic equivalences used in pattern matching |
+
+### Cross-Method Lifecycle Rules
+
+| Tool | Description |
+|---|---|
+| `check_paired_calls` | Type-scoped pairing: a `$x.Start()` in any method of a type requires a `$x.Stop()` somewhere in its method set (or a companion type it constructs, e.g. widget→renderer) |
+| `find_stale_capture` | Fields copied in a create-style method (`CreateRenderer`) and never re-read in a refresh-style method (`Refresh`) — stale-snapshot bugs |
 
 ### Code Transformation
 

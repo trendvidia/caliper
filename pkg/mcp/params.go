@@ -49,6 +49,26 @@ func boolParamDefault(req mcpsdk.CallToolRequest, key string, def bool) bool {
 	return b
 }
 
+// stringSliceParam returns the []string value at key. JSON arrays arrive
+// as []any; non-string elements are skipped.
+func stringSliceParam(req mcpsdk.CallToolRequest, key string) []string {
+	v, ok := req.GetArguments()[key]
+	if !ok {
+		return nil
+	}
+	arr, ok := v.([]any)
+	if !ok {
+		return nil
+	}
+	var out []string
+	for _, e := range arr {
+		if s, ok := e.(string); ok {
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
 // intParam returns the int value at key. JSON numbers arrive as float64,
 // so the helper handles that conversion.
 func intParam(req mcpsdk.CallToolRequest, key string) int {
