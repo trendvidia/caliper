@@ -207,6 +207,65 @@ func TestMCP_FindPattern_InvalidContextSpec(t *testing.T) {
 	}
 }
 
+func TestMCP_FindPattern_ContextSpecShapes(t *testing.T) {
+	dir := setupMCPProject(t, map[string]string{
+		"code.go": `package testpkg
+
+type widget struct{}
+
+func (w *widget) SetText(s string) {}
+
+func background(w *widget) {
+	go func() {
+		w.SetText("goroutine")
+	}()
+}
+`,
+	})
+
+	srv, err := NewServer("test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// A bare string is accepted as a one-element list.
+	req := makeRequest(map[string]any{
+		"pattern": "$w.SetText($msg)",
+		"path":    dir,
+		"inside":  "go",
+	})
+	result, err := srv.handleFindPattern(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.IsError {
+		t.Fatalf("bare-string inside spec should be accepted: %v", resultText(t, result))
+	}
+	data := resultJSON(t, result)
+	if total := data["total"].(float64); total != 1 {
+		t.Errorf("bare-string inside spec: expected 1 match, got %v", total)
+	}
+
+	// Malformed shapes are errors, not silently-ignored filters.
+	for name, bad := range map[string]any{
+		"number":             42,
+		"non-string element": []any{"go", 42},
+	} {
+		req := makeRequest(map[string]any{
+			"pattern": "$w.SetText($msg)",
+			"path":    dir,
+			"inside":  bad,
+		})
+		result, err := srv.handleFindPattern(context.Background(), req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !result.IsError {
+			t.Errorf("%s inside spec: expected error result", name)
+		}
+	}
+}
+
 // --------------------------------------------------------------------------
 // find_type_usage
 // --------------------------------------------------------------------------

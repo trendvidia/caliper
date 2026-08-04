@@ -63,11 +63,19 @@ func (s *Server) handleFindPattern(ctx context.Context, req mcpsdk.CallToolReque
 	}
 
 	// Enclosing-context filters (issue #8): "inside" / "not_inside".
-	inside, err := patterns.ParseContextSpecs(stringSliceParam(req, "inside"))
+	insideStrs, err := stringSliceParam(req, "inside")
 	if err != nil {
 		return errorResult("Invalid inside spec: %v", err), nil
 	}
-	notInside, err := patterns.ParseContextSpecs(stringSliceParam(req, "not_inside"))
+	inside, err := patterns.ParseContextSpecs(insideStrs)
+	if err != nil {
+		return errorResult("Invalid inside spec: %v", err), nil
+	}
+	notInsideStrs, err := stringSliceParam(req, "not_inside")
+	if err != nil {
+		return errorResult("Invalid not_inside spec: %v", err), nil
+	}
+	notInside, err := patterns.ParseContextSpecs(notInsideStrs)
 	if err != nil {
 		return errorResult("Invalid not_inside spec: %v", err), nil
 	}

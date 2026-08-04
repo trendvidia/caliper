@@ -1,6 +1,7 @@
 package mcp
 
 import (
+	"fmt"
 	"strings"
 
 	mcpsdk "github.com/mark3labs/mcp-go/mcp"
@@ -50,23 +51,30 @@ func boolParamDefault(req mcpsdk.CallToolRequest, key string, def bool) bool {
 }
 
 // stringSliceParam returns the []string value at key. JSON arrays arrive
-// as []any; non-string elements are skipped.
-func stringSliceParam(req mcpsdk.CallToolRequest, key string) []string {
+// as []any. A bare string is accepted as a one-element list. Any other
+// shape is an error rather than a silent nil — dropping a malformed
+// filter parameter would make unfiltered results look filtered.
+func stringSliceParam(req mcpsdk.CallToolRequest, key string) ([]string, error) {
 	v, ok := req.GetArguments()[key]
 	if !ok {
-		return nil
+		return nil, nil
+	}
+	if s, ok := v.(string); ok {
+		return []string{s}, nil
 	}
 	arr, ok := v.([]any)
 	if !ok {
-		return nil
+		return nil, fmt.Errorf("parameter %q must be an array of strings, got %T", key, v)
 	}
-	var out []string
+	out := make([]string, 0, len(arr))
 	for _, e := range arr {
-		if s, ok := e.(string); ok {
-			out = append(out, s)
+		s, ok := e.(string)
+		if !ok {
+			return nil, fmt.Errorf("parameter %q must contain only strings, got %T element", key, e)
 		}
+		out = append(out, s)
 	}
-	return out
+	return out, nil
 }
 
 // intParam returns the int value at key. JSON numbers arrive as float64,
