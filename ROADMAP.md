@@ -240,6 +240,30 @@ here so the deltas are tracked.
   trendvidia/mcp-go fork and its `replace` directive are gone.
   caliper depends on stock upstream `v0.57.0`.
 
+### Cross-method lifecycle rules (issue #8) ✓
+
+Both bellui pre-v1 Phase 1 passes hit the same wall: analyses were
+function-local, but GUI-toolkit properties are cross-method. Closed with
+three capabilities:
+
+- [x] `check_paired_calls` — whole-type scope for pairing rules: a match
+  of pattern A in any method of type T requires a match of pattern B in
+  some method of T, or of a companion type constructed by T's methods
+  (widget→renderer). Field-identity pairing via shared metavariables,
+  lenient when a binding doesn't resolve to a field (signal over recall).
+- [x] `find_stale_capture` — "field captured in method A and never
+  re-read in method B" over a type's method set + constructed companions.
+  Exported fields only by default.
+- [x] `find_pattern` `inside` / `not_inside` enclosing-context predicates
+  — `go`, `defer`, `callback_of:<pattern>`, `call:<pattern>`. Lexical
+  semantics (a named function called from a `go` elsewhere doesn't count).
+- [x] `templates.WholeProgramTemplate` + `RunWholeProgram` — plumbing for
+  analyses that need the whole program rather than one function at a
+  time; applies `//caliper:ignore` like per-function templates.
+- [ ] Constructor-call companion discovery (`newRenderer(w)`) — companion
+  types are currently found via composite literals only; following one
+  level of constructor calls would cover factory-style renderers.
+
 ## Phase 6 — Coccinelle Parity
 
 The features below close the remaining gap between Caliper and what Coccinelle provides for C/Linux kernel refactoring. They transform Caliper from a pattern-finder into a full semantic patch engine for Go.

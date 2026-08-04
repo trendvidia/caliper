@@ -425,6 +425,6 @@ bypass the cache entirely.
 
 ## Next Steps
 
-- See the full [tool reference](../README.md) for all 24 MCP tools
+- See the full [tool reference](../README.md) for all 26 MCP tools
 - Read about [finding defer-in-loop bugs in Go's standard library](defer-in-loop-go-stdlib.md)
 - Read the [positioning document](../POSITIONING.md) to understand Caliper's place in the ecosystem

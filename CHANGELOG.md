@@ -5,6 +5,33 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Added
+
+- **Cross-method lifecycle rules** (issue #8). The bellui pre-v1 audits
+  showed the properties worth checking in a GUI toolkit are cross-method,
+  while all analyses were function-local. Three new capabilities close
+  that gap:
+  - **`check_paired_calls`** — type-scoped pairing rule: a match of
+    `first_pattern` in any method of a type requires a match of
+    `second_pattern` somewhere in the type's method set, or in a
+    companion type its methods construct (the widget→renderer link).
+    Pairs by field identity when both patterns share a metavariable
+    bound to a receiver field, lenient otherwise (bellui #167/#120
+    class).
+  - **`find_stale_capture`** — capture-at-create vs re-read-at-refresh:
+    exported fields copied in a capture method (`CreateRenderer`) and
+    never re-read in the re-read method (`Refresh`) of the type or its
+    constructed companions (bellui #203 class).
+  - **`find_pattern` gains `inside` / `not_inside`** enclosing-context
+    filters: `"go"`, `"defer"`, `"callback_of:<pattern>"`,
+    `"call:<pattern>"`. Expresses goroutine-context call discipline
+    like "widget mutation inside `go`/`time.AfterFunc` contexts must be
+    wrapped in `ui.Do(...)`" in one call.
+
+  Both new tools are whole-program analyses (`templates.RunWholeProgram`)
+  and honor `//caliper:ignore` suppressions and `.caliper.pxf` severity
+  overrides like every other check.
+
 ### Fixed
 
 - **`go install`-ed binaries report their version** instead of `dev`.
