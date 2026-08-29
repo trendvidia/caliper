@@ -5,6 +5,25 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Added
+
+- **`EngineOptions.Tests`** includes each package's test files in the load
+  (default `false`, the go/packages default). Test files are roughly half
+  the Go source in some repositories and are where intent is documented, so
+  a consumer building a picture of a codebase usually wants them while a
+  linter reporting on shipped code does not. Measured: including tests takes
+  protolsp from 1,560 to 4,057 workspace functions in the call graph, and
+  protoregistry from 743 to 1,269.
+- **`Engine.GeneratedFiles` / `Engine.IsGeneratedFile` /
+  `InterProceduralContext.IsGeneratedFunc`** identify code produced by a
+  generator. `EngineOptions.SkipGenerated` only filters AST traversal
+  (`Walk`, `FuncNodes`) — the SSA program and call graph are built from every
+  loaded package and are unaffected by it. That asymmetry was undocumented
+  and is a trap for anything walking the call graph: generated functions are
+  **35% of protolsp's workspace functions and 45% of protoregistry's** even
+  with `SkipGenerated: true`. The behaviour is unchanged and now documented,
+  pinned by a test, and filterable by consumers that do not want it.
+
 ### Fixed
 
 - **Call-graph tools no longer crash the server.** Every interprocedural

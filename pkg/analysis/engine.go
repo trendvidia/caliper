@@ -23,6 +23,9 @@ type Engine struct {
 	ipcOnce sync.Once
 	ipc     *InterProceduralContext
 	ipcErr  error
+
+	genOnce   sync.Once
+	generated map[string]bool
 }
 
 // pathRemap maps system GOROOT paths back to fork paths in output.
@@ -33,10 +36,25 @@ type pathRemap struct {
 
 // EngineOptions configures analysis behavior.
 type EngineOptions struct {
-	// SkipGenerated skips files with "// Code generated" headers (default: true).
+	// SkipGenerated skips files with "// Code generated" headers
+	// (default: true).
+	//
+	// Scope: AST traversal only — [Engine.Walk] and [Engine.FuncNodes].
+	// It does NOT filter the SSA program or the call graph, which are
+	// built from every loaded package. A consumer walking the call graph
+	// therefore sees generated functions whatever this is set to; use
+	// [InterProceduralContext.IsGeneratedFunc] to filter there.
 	SkipGenerated bool
-	// SkipCgo skips files that import "C" (default: true).
+	// SkipCgo skips files that import "C" (default: true). Same AST-only
+	// scope as SkipGenerated.
 	SkipCgo bool
+	// Tests includes each package's test files, and the generated test
+	// binary packages, in the load (default: false — the go/packages
+	// default). Test files are roughly half the Go source in some
+	// repositories, and they are where intent is documented, so a
+	// consumer building a picture of a codebase usually wants them; a
+	// linter reporting on shipped code usually does not.
+	Tests bool
 	// BuildTags sets build tags for package loading.
 	BuildTags []string
 
@@ -79,7 +97,8 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 			packages.NeedTypesInfo |
 			packages.NeedDeps |
 			packages.NeedModule,
-		Dir: dir,
+		Dir:   dir,
+		Tests: opts.Tests,
 	}
 
 	// For stdlib (module std), disable go.work (a workspace file above
@@ -388,6 +407,30 @@ func (e *Engine) LocationOf(pos token.Pos) FileLocation {
 
 // WalkFunc visits every ast.Node across all loaded packages.
 type WalkFunc func(pkg *packages.Package, file *ast.File, node ast.Node, info *types.Info) bool
+
+// GeneratedFiles returns the set of file paths that carry a
+// "// Code generated ... DO NOT EDIT." marker, whatever SkipGenerated is
+// set to. Consumers that build their own view of the corpus — a code
+// graph, say — need this because SkipGenerated does not reach the SSA
+// program or the call graph.
+func (e *Engine) GeneratedFiles() map[string]bool {
+	e.genOnce.Do(func() {
+		e.generated = make(map[string]bool)
+		for _, pkg := range e.pkgs {
+			for _, file := range pkg.Syntax {
+				if ast.IsGenerated(file) {
+					e.generated[e.fset.Position(file.Pos()).Filename] = true
+				}
+			}
+		}
+	})
+	return e.generated
+}
+
+// IsGeneratedFile reports whether path was produced by a code generator.
+func (e *Engine) IsGeneratedFile(path string) bool {
+	return e.GeneratedFiles()[path]
+}
 
 // Walk traverses all AST nodes across all loaded packages.
 func (e *Engine) Walk(fn WalkFunc) {
