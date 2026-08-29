@@ -3,6 +3,30 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **Call-graph tools no longer crash the server.** Every interprocedural
+  tool — `find_call_sites`, `find_taint_flow`, and anything else reaching
+  `Engine.InterProcedural()` — panicked on any real workspace, exiting the
+  MCP server with code 2 rather than returning an error. The
+  `packages.Config` load mode set `NeedDeps` but not `NeedImports`;
+  `NeedDeps` only propagates the mode into packages already in `Imports`,
+  and `Imports` itself is populated by `NeedImports`. Without it every
+  `pkg.Imports` was empty, so `ssautil.AllPackages` never created the
+  dependency packages and `prog.Build()` panicked on the first unsatisfied
+  import — which is any package importing so much as `context`. Measured
+  before the fix: 100% of loaded packages had empty `.Imports` across four
+  repositories. The suite stayed green because every interprocedural test
+  fixture was import-free; one now imports `context` and `fmt` and asserts
+  `Imports` is populated. (issue #11)
+- **A program with uncreated dependencies is refused, not built.**
+  `prog.Build()` spawns a goroutine per package, so its panics cannot be
+  recovered by the caller and take the process down. `BuildInterProceduralContext`
+  now validates that precondition up front and returns an error naming the
+  missing import. (issue #11)
+
 ## v1.2.0 — 2026-08-04
 
 ### Added
