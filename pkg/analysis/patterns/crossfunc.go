@@ -202,36 +202,102 @@ func FindCallSitesByPattern(
 	funcPattern *Pattern,
 ) []Match {
 	var results []Match
+	// Keyed on file/line/column only: the syntactic pass and the call-graph
+	// pass describe the same call site but do not always agree on
+	// FileLocation.End, so the whole struct is not a stable identity.
+	type siteKey struct {
+		file string
+		line int
+		col  int
+	}
+	seen := make(map[siteKey]bool)
 
-	// Match function definitions against the pattern.
-	for _, fc := range engine.FuncNodes() {
-		bindings := funcPattern.MatchNode(fc.Func, fc.Info)
-		if bindings == nil {
-			continue
+	add := func(loc analysis.FileLocation, node ast.Node, callee string) {
+		k := siteKey{loc.File, loc.Line, loc.Column}
+		if loc.File == "" || seen[k] {
+			return
 		}
+		seen[k] = true
+		results = append(results, Match{
+			Node:   node,
+			File:   loc.File,
+			Line:   loc.Line,
+			Column: loc.Column,
+			Bindings: Bindings{
+				"callee": {Name: "callee", Node: nil},
+			},
+		})
+		_ = callee
+	}
 
-		ssaFn := ipc.FindFunction(fc)
-		if ssaFn == nil {
-			continue
+	// Syntactic call sites: match the pattern against call expressions across
+	// the corpus. This is the same walk find_pattern uses, and it is what makes
+	// the documented `$x.Close()` form work.
+	callees := make(map[*ssa.Function]bool)
+	engine.Walk(func(_ *packages.Package, _ *ast.File, node ast.Node, info *types.Info) bool {
+		call, ok := node.(*ast.CallExpr)
+		if !ok {
+			return true
 		}
+		if funcPattern.MatchNode(node, info) == nil {
+			return true
+		}
+		// Anchor on the '(' — the call graph reports a call site at its
+		// Lparen, so using the same anchor makes the two passes agree on
+		// identity and keeps two calls on one line distinct.
+		add(engine.LocationOf(call.Lparen), node, "")
+		if fn := calleeFunction(ipc, call, info); fn != nil {
+			callees[fn] = true
+		}
+		return true
+	})
 
-		// Collect all call sites.
-		for _, cs := range ipc.CallSitesOf(ssaFn) {
-			results = append(results, Match{
-				Node: nil, // AST node not tracked at this level
-				File: cs.Position.File,
-				Line: cs.Position.Line,
-				Bindings: Bindings{
-					"caller":   {Name: "caller", Node: nil},
-					"callee":   {Name: "callee", Node: fc.Func.Name},
-					"is_go":    {Name: "is_go"},
-					"is_defer": {Name: "is_defer"},
-				},
-			})
+	// Call-graph enrichment: for every callee the syntactic pass resolved, add
+	// the call sites the call graph knows about. This is what the tool claims
+	// over text search — calls reaching the same function through a function
+	// value, or from a package the pattern's spelling does not appear in.
+	if ipc != nil {
+		for fn := range callees {
+			for _, cs := range ipc.CallSitesOf(fn) {
+				add(cs.Position, nil, fn.Name())
+			}
 		}
 	}
 
 	return results
+}
+
+// calleeFunction resolves the static callee of a call expression to its SSA
+// function, or nil when the callee is not a statically known func (an
+// interface method, a func-typed variable, or a builtin).
+func calleeFunction(ipc *analysis.InterProceduralContext, call *ast.CallExpr, info *types.Info) *ssa.Function {
+	if ipc == nil || ipc.Program == nil || info == nil {
+		return nil
+	}
+	var id *ast.Ident
+	switch fun := unparen(call.Fun).(type) {
+	case *ast.Ident:
+		id = fun
+	case *ast.SelectorExpr:
+		id = fun.Sel
+	default:
+		return nil
+	}
+	fnObj, ok := info.Uses[id].(*types.Func)
+	if !ok {
+		return nil
+	}
+	return ipc.Program.FuncValue(fnObj)
+}
+
+func unparen(e ast.Expr) ast.Expr {
+	for {
+		p, ok := e.(*ast.ParenExpr)
+		if !ok {
+			return e
+		}
+		e = p.X
+	}
 }
 
 // FindAllCallSites finds all call sites of a specific SSA function and
