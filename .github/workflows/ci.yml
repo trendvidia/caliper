@@ -55,4 +55,16 @@ jobs:
           # golangci-lint is lower than the targeted Go version"). v2
           # uses the same .golangci.yml schema this repo ships.
           version: v2.10.1
+          # Build the linter with the runner's toolchain instead of
+          # downloading a prebuilt binary. The prebuilt release is built
+          # against upstream Go, and this runner deliberately uses the
+          # go-plus fork (asserted above); analysing a forked stdlib with
+          # an analyzer built elsewhere loses facts staticcheck depends
+          # on. Concretely it stopped deriving that testing.T.Fatal does
+          # not return, and reported six SA5011 "possible nil pointer
+          # dereference" false positives in matcher_test.go — code
+          # unchanged since April, where `if b == nil { t.Fatal(...) }`
+          # makes the following deref safe. The same v2.10.1 run through
+          # `go run` locally, compiled with go-plus, reports 0 issues.
+          install-mode: goinstall
           args: --timeout=5m
