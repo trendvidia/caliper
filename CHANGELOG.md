@@ -27,6 +27,18 @@ All notable user-visible changes to caliper. Format roughly follows
   now validates that precondition up front and returns an error naming the
   missing import. (issue #11)
 
+- **`find_call_sites` returns results.** It reported `total: 0` for every
+  input on every repository. `FindCallSitesByPattern` matched the pattern
+  against function *declarations* (`engine.FuncNodes()` yields
+  `*ast.FuncDecl`) while the pattern compiler only accepts *expressions* —
+  declaration syntax is rejected as "not a valid expression" — so the match
+  loop was unreachable for every valid pattern. It now matches call
+  expressions across the corpus, as the tool's own documented example
+  (`$x.Close()`) always implied, then enriches the result with call sites
+  the call graph knows about for each resolved callee. Measured after the
+  fix: 138 hits for `$x.Close()` on protolsp, 229 for `$x.String()` on
+  protocompile, 384 for `$x.Close()` on govm — all previously 0. (issue #18)
+
 ## v1.2.0 — 2026-08-04
 
 ### Added
