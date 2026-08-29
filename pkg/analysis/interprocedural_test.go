@@ -3,7 +3,12 @@ package analysis
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+
+	"golang.org/x/tools/go/packages"
+	"golang.org/x/tools/go/ssa"
+	"golang.org/x/tools/go/ssa/ssautil"
 )
 
 // setupMultiFileProject creates a temp Go project with multiple source files.
@@ -321,5 +326,117 @@ func target() {}
 	// Non-existent function.
 	if ipc.FindFunctionByName("testpkg", "nonexistent") != nil {
 		t.Error("expected nil for nonexistent function")
+	}
+}
+
+// TestBuildInterProceduralContext_StdlibImports is the regression guard for the
+// load-mode bug where packages.NeedImports was absent: pkg.Imports came back
+// empty, ssautil.AllPackages never created the dependency packages, and
+// prog.Build() panicked on the first unsatisfied import. Every fixture in this
+// file used to be import-free, so the whole interprocedural surface was broken
+// against real code while the suite stayed green.
+//
+// The fixture must import at least one stdlib package for this to test anything.
+func TestBuildInterProceduralContext_StdlibImports(t *testing.T) {
+	engine := setupMultiFileProject(t, map[string]string{
+		"main.go": `package testpkg
+
+import (
+	"context"
+	"fmt"
+)
+
+func caller(ctx context.Context) {
+	callee(ctx)
+	fmt.Println("side effect")
+}
+
+func callee(ctx context.Context) {
+	_ = ctx.Err()
+}
+`,
+	})
+
+	// Guard the root cause directly: the load mode must populate Imports.
+	for _, p := range engine.Packages() {
+		if len(p.Imports) == 0 {
+			t.Fatalf("package %q has no Imports — packages.NeedImports is missing "+
+				"from the load mode; SSA cannot resolve dependencies without it", p.PkgPath)
+		}
+	}
+
+	ipc, err := BuildInterProceduralContext(engine, AlgoCHA)
+	if err != nil {
+		t.Fatalf("BuildInterProceduralContext: %v", err)
+	}
+
+	fn := ipc.FindFunctionByName("testpkg", "callee")
+	if fn == nil {
+		t.Fatal("FindFunctionByName(testpkg, callee) returned nil")
+	}
+	callers := ipc.CallersOf(fn)
+	if len(callers) == 0 {
+		t.Fatal("CallersOf(callee) is empty; expected caller()")
+	}
+	found := false
+	for _, c := range callers {
+		if c.Name() == "caller" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("CallersOf(callee) did not include caller(); got %v", callers)
+	}
+}
+
+// TestCheckSSAImports_MissingDependency pins that a program whose dependencies
+// were never created is refused with an error instead of panicking. The panic
+// fires in a goroutine spawned by prog.Build(), so it cannot be recovered — it
+// used to exit(2) and take the MCP server with it, ending the session over one
+// malformed workspace.
+//
+// It reproduces the exact historical condition rather than a synthetic one: load
+// a package WITHOUT packages.NeedImports (the pre-fix load mode), which leaves
+// pkg.Imports empty so ssautil.AllPackages never creates the dependency
+// packages.
+func TestCheckSSAImports_MissingDependency(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module testpkg\n\ngo 1.23\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	src := `package testpkg
+
+import "context"
+
+func use(ctx context.Context) error { return ctx.Err() }
+`
+	if err := os.WriteFile(filepath.Join(dir, "main.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	// Deliberately the pre-fix mode: NeedDeps without NeedImports.
+	brokenMode := packages.NeedName | packages.NeedFiles | packages.NeedSyntax |
+		packages.NeedTypes | packages.NeedTypesInfo | packages.NeedDeps | packages.NeedModule
+	pkgs, err := packages.Load(&packages.Config{Mode: brokenMode, Dir: dir}, "./...")
+	if err != nil {
+		t.Fatalf("packages.Load: %v", err)
+	}
+	for _, p := range pkgs {
+		if len(p.Imports) != 0 {
+			t.Skipf("x/tools now populates Imports without NeedImports; "+
+				"this test no longer reproduces the condition (package %q)", p.PkgPath)
+		}
+	}
+
+	prog, ssaPkgs := ssautil.AllPackages(pkgs, ssa.SanityCheckFunctions)
+
+	// Must return an error rather than let prog.Build() panic.
+	err = checkSSAImports(prog, ssaPkgs)
+	if err == nil {
+		t.Fatal("checkSSAImports accepted a program with uncreated dependencies; " +
+			"prog.Build() would panic in a builder goroutine and kill the process")
+	}
+	if !strings.Contains(err.Error(), "NeedImports") {
+		t.Errorf("error does not name the root cause: %v", err)
 	}
 }

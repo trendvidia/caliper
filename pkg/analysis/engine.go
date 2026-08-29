@@ -64,8 +64,16 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	}
 
 	cfg := &packages.Config{
+		// NeedImports is load-bearing, not decorative: NeedDeps only
+		// propagates this mode INTO the packages already in Imports, and
+		// Imports itself is populated by NeedImports. Without it every
+		// pkg.Imports is empty, so ssautil.AllPackages never calls
+		// CreatePackage for a dependency and prog.Build() panics on the
+		// first unsatisfied import — which is every real package, since
+		// they all import at least "context" or "fmt".
 		Mode: packages.NeedName |
 			packages.NeedFiles |
+			packages.NeedImports |
 			packages.NeedSyntax |
 			packages.NeedTypes |
 			packages.NeedTypesInfo |

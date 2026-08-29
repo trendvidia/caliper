@@ -59,9 +59,21 @@ type CallSite struct {
 // BuildInterProceduralContext constructs the SSA program and call graph
 // from an Engine. The call graph algorithm can be selected; CHA is the
 // default and works on library code without a main function.
-func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (*InterProceduralContext, error) {
+func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *InterProceduralContext, err error) {
 	// Build SSA program from all loaded packages.
 	prog, ssaPkgs := ssautil.AllPackages(engine.Packages(), ssa.SanityCheckFunctions)
+
+	// prog.Build() panics on an inconsistent program — most often
+	// "unsatisfied import: Program.CreatePackage(X) was not called" when a
+	// dependency was never loaded. That panic fires inside a goroutine the
+	// builder spawns per package, so a deferred recover() here CANNOT catch
+	// it: the process dies, and an MCP server dies with it. The only way to
+	// keep a malformed workspace from ending the session is to refuse to
+	// build, so check the precondition first and report which import is
+	// missing.
+	if err := checkSSAImports(prog, ssaPkgs); err != nil {
+		return nil, err
+	}
 	prog.Build()
 
 	var nonNil []*ssa.Package
@@ -87,6 +99,28 @@ func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (*Inte
 		CallGraph: cg,
 		Algorithm: usedAlgo,
 	}, nil
+}
+
+// checkSSAImports verifies every created package's imports were also created,
+// which is prog.Build()'s unstated precondition. Violating it panics inside a
+// builder goroutine and takes the process down, so this returns an error
+// instead — naming the importer, the missing import, and the usual cause.
+func checkSSAImports(prog *ssa.Program, ssaPkgs []*ssa.Package) error {
+	for _, p := range ssaPkgs {
+		if p == nil || p.Pkg == nil {
+			continue
+		}
+		for _, imp := range p.Pkg.Imports() {
+			if prog.Package(imp) == nil {
+				return fmt.Errorf(
+					"package %q imports %q, which was not created in the SSA program: "+
+						"the packages.Config load mode is missing packages.NeedImports "+
+						"(NeedDeps alone does not populate Imports)",
+					p.Pkg.Path(), imp.Path())
+			}
+		}
+	}
+	return nil
 }
 
 func buildCallGraph(prog *ssa.Program, pkgs []*ssa.Package, algo CallGraphAlgorithm) (*callgraph.Graph, CallGraphAlgorithm, error) {
