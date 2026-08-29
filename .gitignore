@@ -18,3 +18,12 @@ Thumbs.db
 coverage.html
 
 # Go build cache
+
+# Go workspace — machine-local wiring between checkouts
+go.work
+go.work.sum
+
+# AI assistant — per-machine local settings and context
+.claude/
+CLAUDE.md
+AGENTS.md
