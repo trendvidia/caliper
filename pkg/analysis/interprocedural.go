@@ -123,6 +123,25 @@ func checkSSAImports(prog *ssa.Program, ssaPkgs []*ssa.Package) error {
 	return nil
 }
 
+// IsGeneratedFunc reports whether fn was declared in a generated file.
+//
+// The SSA program and call graph are built from every loaded package, so
+// EngineOptions.SkipGenerated does not filter them. A consumer walking the
+// call graph — building a code graph, for instance — uses this to decide
+// whether generated code belongs in its output. For protobuf- or
+// sqlc-heavy repositories it usually does: the generated types are the
+// bridge between a schema and the code that uses it.
+func (ipc *InterProceduralContext) IsGeneratedFunc(fn *ssa.Function) bool {
+	if ipc == nil || ipc.Engine == nil || fn == nil {
+		return false
+	}
+	pos := fn.Pos()
+	if !pos.IsValid() {
+		return false
+	}
+	return ipc.Engine.IsGeneratedFile(ipc.Engine.Fset().Position(pos).Filename)
+}
+
 func buildCallGraph(prog *ssa.Program, pkgs []*ssa.Package, algo CallGraphAlgorithm) (*callgraph.Graph, CallGraphAlgorithm, error) {
 	switch algo {
 	case AlgoRTA:
