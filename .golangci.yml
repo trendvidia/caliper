@@ -20,6 +20,26 @@ linters:
     paths:
       - testdata
       - pkg/caliperpb/.*\.pb\.go$
+    rules:
+      # SA5011 ("possible nil pointer dereference") is unreliable in table
+      # tests: the guard is `if x == nil { t.Fatal(...) }`, and staticcheck
+      # only knows the following deref is safe if it derives that
+      # testing.T.Fatal does not return. On the CI runner it does not derive
+      # that, and reports the guarded deref as a nil dereference. The code is
+      # correct — `t.Fatal` calls `runtime.Goexit`.
+      #
+      # This is systemic rather than a few sites: 40 nil-guard/t.Fatal blocks
+      # across 8 test files. With max-same-issues at its default of 3 only six
+      # surface per run, so fixing the reported ones just promotes the next
+      # six — the reported set moved between runs for exactly this reason.
+      #
+      # Scoped to _test.go and to SA5011 alone, so staticcheck keeps full
+      # force on production code and every other check keeps full force on
+      # tests.
+      - path: '_test\.go'
+        linters:
+          - staticcheck
+        text: 'SA5011'
 
 formatters:
   enable:
