@@ -1677,6 +1677,98 @@ func noParent() {
 	}
 }
 
+// TestContextMisuse_DeferredCleanup pins #10: context.Background() in a
+// deferred cleanup — directly deferred, inside a deferred closure, or as
+// the parent of a WithTimeout there — is the correct idiom and is not
+// reported, while a plain context.Background() in the same function's
+// body still is, and so is context.TODO() inside a defer.
+func TestContextMisuse_DeferredCleanup(t *testing.T) {
+	src := `package testpkg
+
+import (
+	"context"
+	"time"
+)
+
+type tx struct{}
+
+func (tx) Rollback(ctx context.Context) error { return nil }
+
+func begin(ctx context.Context) (tx, error) { return tx{}, nil }
+
+func adopt(ctx context.Context) error {
+	t, err := begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = t.Rollback(context.Background()) }()
+	return nil
+}
+
+func direct(ctx context.Context) error {
+	t, _ := begin(ctx)
+	defer t.Rollback(context.Background())
+	return nil
+}
+
+func withTimeout(ctx context.Context) error {
+	t, _ := begin(ctx)
+	defer func() {
+		c, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		_ = t.Rollback(c)
+	}()
+	return nil
+}
+
+func bodyStillFlagged(ctx context.Context) error {
+	t, _ := begin(ctx)
+	defer func() { _ = t.Rollback(context.Background()) }()
+	bg := context.Background() // MISUSE
+	_ = bg
+	return nil
+}
+
+func todoInDefer(ctx context.Context) error {
+	t, _ := begin(ctx)
+	defer func() { _ = t.Rollback(context.TODO()) }() // TODO-IN-DEFER
+	return nil
+}
+`
+	lineOf := func(marker string) int {
+		for i, l := range strings.Split(src, "\n") {
+			if strings.Contains(l, marker) {
+				return i + 1
+			}
+		}
+		t.Fatalf("marker %q not in source", marker)
+		return 0
+	}
+	misuseLine, todoLine := lineOf("// MISUSE"), lineOf("// TODO-IN-DEFER")
+
+	engine := setupProject(t, src)
+	tmpl := &ContextMisuse{FlagTodo: true}
+	findings := findingsOfKind(RunTemplate(engine, tmpl), "context_misuse")
+
+	var bg, todo []int
+	for _, f := range findings {
+		switch {
+		case strings.Contains(f.Message, "Background"):
+			bg = append(bg, f.Location.Line)
+		case strings.Contains(f.Message, "TODO"):
+			todo = append(todo, f.Location.Line)
+		}
+	}
+	if len(bg) != 1 || bg[0] != misuseLine {
+		t.Errorf("Background findings at lines %v; want exactly one, at line %d (the plain body use), none in the deferred cleanups", bg, misuseLine)
+	}
+	// Once, not twice: the CFG lists a defer where it is registered and
+	// again where it runs, and the rule must report the source position once.
+	if len(todo) != 1 || todo[0] != todoLine {
+		t.Errorf("TODO findings at lines %v; want exactly one, at line %d inside the defer", todo, todoLine)
+	}
+}
+
 func TestContextMisuse_TodoFlagged(t *testing.T) {
 	src := `package testpkg
 

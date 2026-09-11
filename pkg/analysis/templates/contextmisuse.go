@@ -83,6 +83,17 @@ func (cm *ContextMisuse) checkNode(ctx *TemplateContext, node ast.Node, hasCtxPa
 		return nil
 	case *ast.CallExpr:
 		call = n
+	case *ast.DeferStmt:
+		// A deferred cleanup runs when the function returns — including
+		// because ctx was cancelled or timed out — so passing ctx to it
+		// skips the cleanup exactly when it is needed most (pgx's
+		// Rollback returns at once on a done context and leaves the
+		// connection in a transaction). context.Background(), or a
+		// WithTimeout off it, inside a defer is the correct idiom, not
+		// a misuse, whether the call is deferred directly or inside a
+		// deferred closure (#10). context.TODO() is still a placeholder
+		// wherever it sits, so the walk keeps reporting that.
+		return cm.checkNested(ctx, n, false)
 	default:
 		// Walk composite expressions — e.g., context.WithCancel(context.Background())
 		return cm.checkNested(ctx, node, hasCtxParam)

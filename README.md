@@ -74,7 +74,7 @@ Caliper exposes 26 MCP tools across seven categories.
 | `find_error_swallow` | Explicitly discarded errors (`_ = f()`, `f, _ := os.Open()`) with severity tiers |
 | `find_lock_violation` | Mutex discipline: missing unlock, double lock, RLock/RUnlock pairs |
 | `find_defer_in_loop` | Defer inside for/range loops (accumulates until function returns) |
-| `find_context_misuse` | `context.Background()` when parent context available, `context.TODO()` in production |
+| `find_context_misuse` | `context.Background()` when parent context available (outside deferred cleanups), `context.TODO()` in production |
 
 ### Concurrency Analysis
 
