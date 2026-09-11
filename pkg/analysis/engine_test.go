@@ -367,3 +367,47 @@ func TestEngine_StdlibPackage(t *testing.T) {
 		t.Error("expected to find fmt.Println")
 	}
 }
+
+// --------------------------------------------------------------------------
+// Environment
+// --------------------------------------------------------------------------
+
+// TestEngine_Env pins that Env reaches the load: a file behind a GOOS
+// constraint the host does not satisfy contributes its function only when
+// the caller asks for that GOOS. Tags cannot do this, since GOOS and
+// GOARCH are not tags.
+func TestEngine_Env(t *testing.T) {
+	dir := setupTestProject(t, map[string]string{
+		"normal.go":     "package testpkg\n\nfunc Normal() {}\n",
+		"plan9_only.go": "//go:build plan9\n\npackage testpkg\n\nfunc Plan9Only() {}\n",
+	})
+	has := func(engine *Engine, name string) bool {
+		for _, fn := range engine.FuncNodes() {
+			if fn.Func.Name.Name == name {
+				return true
+			}
+		}
+		return false
+	}
+
+	engine, err := NewEngineWithOptions(dir, DefaultOptions())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if has(engine, "Plan9Only") {
+		t.Fatal("Plan9Only loaded on the host: the fixture's constraint does not exclude it here")
+	}
+
+	opts := DefaultOptions()
+	opts.Env = []string{"GOOS=plan9", "GOARCH=amd64"}
+	engine, err = NewEngineWithOptions(dir, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !has(engine, "Plan9Only") {
+		t.Error("Plan9Only missing with GOOS=plan9 in Env")
+	}
+	if !has(engine, "Normal") {
+		t.Error("Normal missing with Env set: the environment must be appended, not replaced")
+	}
+}

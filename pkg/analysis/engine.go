@@ -57,6 +57,13 @@ type EngineOptions struct {
 	Tests bool
 	// BuildTags sets build tags for package loading.
 	BuildTags []string
+	// Env is appended to the load's environment, in KEY=VALUE form, after
+	// the process environment and the engine's own settings. Its purpose
+	// is a configuration the host is not: GOOS=linux and GOARCH=amd64
+	// load the files behind //go:build constraints a tag cannot satisfy,
+	// since GOOS and GOARCH are not tags (trendvidia/alidade#43). Empty
+	// by default, and not touched by DefaultOptions.
+	Env []string
 
 	// pathRemap remaps file paths in output (internal, set by engine).
 	pathRemap *pathRemap
@@ -136,12 +143,21 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		cfg.BuildFlags = []string{"-tags=" + strings.Join(opts.BuildTags, ",")}
 	}
 
+	// Apply the caller's environment last, so it wins over the process
+	// environment and over the stdlib settings above.
+	if len(opts.Env) > 0 {
+		if cfg.Env == nil {
+			cfg.Env = os.Environ()
+		}
+		cfg.Env = append(cfg.Env, opts.Env...)
+	}
+
 	pkgs, err := packages.Load(cfg, patterns...)
 
 	// If loading failed, retry with GOWORK=off in case a go.work file
 	// above the target is interfering.
-	if err != nil && cfg.Env == nil {
-		cfg.Env = append(os.Environ(), "GOWORK=off")
+	if err != nil && !hasEnv(cfg.Env, "GOWORK=off") {
+		cfg.Env = append(append(os.Environ(), "GOWORK=off"), opts.Env...)
 		pkgs, err = packages.Load(cfg, patterns...)
 	}
 
@@ -162,7 +178,7 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	// If ALL packages failed, check if a go.work might be interfering
 	// and retry with GOWORK=off.
 	if len(validPkgs) == 0 && !hasEnv(cfg.Env, "GOWORK=off") {
-		cfg.Env = append(os.Environ(), "GOWORK=off")
+		cfg.Env = append(append(os.Environ(), "GOWORK=off"), opts.Env...)
 		pkgs, err = packages.Load(cfg, patterns...)
 		if err == nil {
 			for _, pkg := range pkgs {
