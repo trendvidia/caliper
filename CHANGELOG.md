@@ -7,6 +7,25 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ### Fixed
 
+- **`EngineOptions.DepsFromExportData` refuses a newer toolchain instead
+  of ending the process** (#35). go/packages asks for complete types for
+  every direct import of a package it type-checks from source, and fills
+  them from export data; when that read fails it calls `log.Fatalf` from
+  inside its importer, which no caller can recover — an MCP server dies
+  with it. A go command from a newer release than the Go this program was
+  built with is exactly such a failure. The load now stops before
+  starting, with an error naming both versions and what to do about it.
+  Measured on steward with a caliper built by go1.26.7 against go1.27.1's
+  `go list`: before, the process exited 1 with `internal error: package
+  "math/rand/v2" without types was imported from
+  "google.golang.org/grpc/internal/transport"`; now it returns the
+  refusal. Unskewed behaviour is unchanged, 117 of 117 packages before
+  and after. The default load is not refused: it completes under skew,
+  though it leaves only 15 of steward's 117 packages in the SSA program,
+  so a skewed run is worth avoiding in either mode. Export data
+  unreadable for another reason, a truncated build cache say, can still
+  reach the same fatal; only the predictable cause is guarded.
+
 - **`context_misuse` no longer flags a detached context in a deferred
   cleanup** (#10). A deferred `Rollback`, `Close` or `Unlock` runs when
   the function returns, including because `ctx` was cancelled or timed
