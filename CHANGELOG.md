@@ -3,6 +3,17 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **`EngineOptions.Env`** appends `KEY=VALUE` entries to the load's
+  environment, after the process environment and the engine's own
+  settings. Its purpose is a build configuration the host is not:
+  `GOOS=linux`, `GOARCH=amd64` load the files behind `//go:build`
+  constraints a tag cannot satisfy, since GOOS and GOARCH are not tags
+  (#25, for trendvidia/alidade#43). Empty by default.
+
 ## v1.3.0 — 2026-08-29
 
 ### Added
