@@ -7,8 +7,7 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ### Fixed
 
-- **`EngineOptions.DepsFromExportData` refuses a newer toolchain instead
-  of ending the process** (#35). go/packages asks for complete types for
+- **A load refuses a newer toolchain instead of answering wrongly** (#35). go/packages asks for complete types for
   every direct import of a package it type-checks from source, and fills
   them from export data; when that read fails it calls `log.Fatalf` from
   inside its importer, which no caller can recover — an MCP server dies
@@ -19,12 +18,14 @@ All notable user-visible changes to caliper. Format roughly follows
   `go list`: before, the process exited 1 with `internal error: package
   "math/rand/v2" without types was imported from
   "google.golang.org/grpc/internal/transport"`; now it returns the
-  refusal. Unskewed behaviour is unchanged, 117 of 117 packages before
-  and after. The default load is not refused: it completes under skew,
-  though it leaves only 15 of steward's 117 packages in the SSA program,
-  so a skewed run is worth avoiding in either mode. Export data
-  unreadable for another reason, a truncated build cache say, can still
-  reach the same fatal; only the predictable cause is guarded.
+  refusal. The default load is refused too, for a different reason: it
+  completes under skew, but the older type checker cannot process the
+  newer toolchain's sources, so the same run left 15 of steward's 117
+  packages in the SSA program and reported no error — a call graph
+  missing 87% of the module. Unskewed behaviour is unchanged, 117 of 117
+  packages before and after, in both modes. Export data unreadable for
+  another reason, a truncated build cache say, can still reach the same
+  fatal; only the predictable cause is guarded.
 
 - **`context_misuse` no longer flags a detached context in a deferred
   cleanup** (#10). A deferred `Rollback`, `Close` or `Unlock` runs when

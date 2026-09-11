@@ -15,9 +15,9 @@ func stubGoVersion(t *testing.T, v string) {
 	t.Cleanup(func() { goVersionOf = prev })
 }
 
-// TestSkewError pins which version pairs are a refusal. The fatal this
-// guards needs go/packages to find export data it cannot read, which
-// takes a real release gap; anything unparseable is not refused.
+// TestSkewError pins which version pairs are a refusal, and that each
+// mode's message names what the load would have done. The guard needs a
+// real release gap; anything unparseable is not refused.
 func TestSkewError(t *testing.T) {
 	for _, tc := range []struct {
 		self, tool string
@@ -32,58 +32,67 @@ func TestSkewError(t *testing.T) {
 		{"go1.26.7", "devel +abc123", false}, // unparseable toolchain
 		{"", "", false},
 	} {
-		err := skewError(tc.self, tc.tool)
-		if (err != nil) != tc.refuse {
-			t.Errorf("skewError(%q, %q) = %v; want refusal=%v", tc.self, tc.tool, err, tc.refuse)
-		}
-		if err != nil && (!strings.Contains(err.Error(), tc.self) || !strings.Contains(err.Error(), tc.tool)) {
-			t.Errorf("skewError(%q, %q) names neither version: %v", tc.self, tc.tool, err)
+		for _, exportData := range []bool{false, true} {
+			err := skewError(tc.self, tc.tool, exportData)
+			if (err != nil) != tc.refuse {
+				t.Errorf("skewError(%q, %q, %v) = %v; want refusal=%v", tc.self, tc.tool, exportData, err, tc.refuse)
+				continue
+			}
+			if err == nil {
+				continue
+			}
+			if !strings.Contains(err.Error(), tc.self) || !strings.Contains(err.Error(), tc.tool) {
+				t.Errorf("skewError(%q, %q, %v) names neither version: %v", tc.self, tc.tool, exportData, err)
+			}
+			want, unwanted := "analyse a fraction", "end the process"
+			if exportData {
+				want, unwanted = "end the process", "analyse a fraction"
+			}
+			if !strings.Contains(err.Error(), want) || strings.Contains(err.Error(), unwanted) {
+				t.Errorf("skewError(exportData=%v) does not describe its own mode: %v", exportData, err)
+			}
 		}
 	}
 }
 
-// TestToolchainSkew_RefusesExportDataLoad pins that the engine refuses
-// the export-data load under skew instead of calling into go/packages,
-// which would end the process (#35), and that the default load is not
-// refused. The skew is simulated: reproducing it needs two toolchains,
-// and the test binary is built by the go command that would run the load.
-func TestToolchainSkew_RefusesExportDataLoad(t *testing.T) {
+// TestToolchainSkew_RefusesBothLoads pins that the engine refuses under a
+// newer toolchain in either mode instead of calling into go/packages: the
+// export-data load would end the process (#35), and the default load
+// would return a graph missing most of the module without saying so. The
+// skew is simulated, since the test binary is built by the go command
+// that would run the load.
+func TestToolchainSkew_RefusesBothLoads(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "exportdeps"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	stubGoVersion(t, "go1.99.0")
 
-	if _, err := NewEngineWithOptions(dir, EngineOptions{SkipCgo: true, DepsFromExportData: true}); err == nil {
-		t.Error("DepsFromExportData load succeeded under a newer toolchain; want a refusal before the load")
-	} else {
+	for _, exportData := range []bool{false, true} {
+		_, err := NewEngineWithOptions(dir, EngineOptions{SkipCgo: true, DepsFromExportData: exportData})
+		if err == nil {
+			t.Errorf("DepsFromExportData=%v: load succeeded under a newer toolchain; want a refusal before the load", exportData)
+			continue
+		}
 		for _, want := range []string{runtime.Version(), "go1.99.0", "#35"} {
 			if !strings.Contains(err.Error(), want) {
-				t.Errorf("refusal does not mention %q: %v", want, err)
+				t.Errorf("DepsFromExportData=%v: refusal does not mention %q: %v", exportData, want, err)
 			}
 		}
-	}
-
-	// The default load is unaffected: it completes under skew today, and
-	// refusing it too is a wider decision than this fix.
-	eng, err := NewEngineWithOptions(dir, EngineOptions{SkipCgo: true})
-	if err != nil {
-		t.Fatalf("default load refused under a newer toolchain: %v", err)
-	}
-	if len(eng.Packages()) == 0 {
-		t.Error("default load returned no packages")
 	}
 }
 
 // TestToolchainSkew_NoSkewLoads pins that the guard does not refuse the
 // real machine, where the program and the go command are the same
-// release: goVersionOf is not stubbed here.
+// release: goVersionOf is not stubbed here, in either mode.
 func TestToolchainSkew_NoSkewLoads(t *testing.T) {
 	dir, err := filepath.Abs(filepath.Join("testdata", "exportdeps"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := NewEngineWithOptions(dir, EngineOptions{SkipCgo: true, DepsFromExportData: true}); err != nil {
-		t.Fatalf("export-data load refused without skew: %v", err)
+	for _, exportData := range []bool{false, true} {
+		if _, err := NewEngineWithOptions(dir, EngineOptions{SkipCgo: true, DepsFromExportData: exportData}); err != nil {
+			t.Fatalf("DepsFromExportData=%v: load refused without skew: %v", exportData, err)
+		}
 	}
 }
