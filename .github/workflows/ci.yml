@@ -54,5 +54,5 @@ jobs:
           # 1.26 directive ("Go language version used to build
           # golangci-lint is lower than the targeted Go version"). v2
           # uses the same .golangci.yml schema this repo ships.
-          version: v2.10.1
+          version: v2.13.2
           args: --timeout=5m
