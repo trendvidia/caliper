@@ -9,8 +9,8 @@ package analysis
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
-	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -180,83 +180,90 @@ func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.P
 // which says nothing about whether its types are usable.
 func hasNonDriverError(p *packages.Package) bool {
 	for _, e := range p.Errors {
-		if e.Kind != packages.ListError {
+		if e.Kind != packages.ListError && !isVersionSkewNotice(e) {
 			return true
 		}
 	}
 	return false
 }
 
+// isVersionSkewNotice reports whether e is the notice go/packages appends
+// to every package that already has an error when this program was built
+// with an older Go than the `go` command it runs (x/tools
+// go/packages/packages.go, "This application uses version go1.N of the
+// source-processing packages..."). It says nothing about the package, so
+// it must not decide whether the package's declarations are usable. It is
+// matched by its wording because unreadable export data is also an
+// UnknownError at "-"; should x/tools reword it, it counts again, the
+// conservative way.
+//
+// This is insurance, not a fix for an observed regression. Measured on
+// steward with a caliper built by go1.26.7 against go1.27.1's `go list`:
+// 12 of the 1,293 packages carry errors and every one of them is a real
+// type error the older checker reports ("file requires newer Go version
+// go1.27", a changed math/rand/v2 signature) — no package carries the
+// notice alone, so classification is the same with and without this, and
+// the load collapses to 15 of steward's 117 packages either way. The
+// notice can only mislead where a skew is otherwise harmless, which the
+// standard library's own use of new language features makes rare.
+func isVersionSkewNotice(e packages.Error) bool {
+	return e.Kind == packages.UnknownError && e.Pos == "-" &&
+		strings.HasPrefix(e.Msg, "This application uses version go1.")
+}
+
 // hasDeclarationError reports whether p has an error that can have
-// reached its declarations: any error that is not the driver's and does
-// not lie inside the body of a function declaration in p's syntax. A
-// parse error counts whatever its position, since the AST after it is
-// not the file's. An error whose position cannot be placed counts too.
+// reached its declarations: any error that is not the driver's or the
+// version-skew notice and does not lie inside the body of a function
+// declaration in p's syntax. A parse error counts whatever its position,
+// since the AST after it is not the file's. An error whose position
+// cannot be placed counts too.
+//
+// A type error is placed by its types.Error in p.TypeErrors, whose
+// token.Pos is the position in the source, not by the position string in
+// p.Errors, which //line directives have remapped: in generated code a
+// declaration can map into the line range of a body in the same file, and
+// a body statement into another file.
 func hasDeclarationError(p *packages.Package) bool {
+	typeErrors := 0
 	for _, e := range p.Errors {
-		switch e.Kind {
-		case packages.ListError:
-			continue
-		case packages.TypeError:
-			if insideFuncBody(p, e.Pos) {
-				continue
-			}
+		switch {
+		case e.Kind == packages.ListError, isVersionSkewNotice(e):
+		case e.Kind == packages.TypeError:
+			typeErrors++
+		default:
+			return true
 		}
+	}
+	// go/packages records each types.Error in both lists; a mismatch is a
+	// type error this cannot place.
+	if typeErrors != len(p.TypeErrors) {
 		return true
+	}
+	for _, e := range p.TypeErrors {
+		if !insideFuncBody(p, e.Pos) {
+			return true
+		}
 	}
 	return false
 }
 
-// insideFuncBody reports whether the position string of a packages.Error
-// ("file:line:col") lies within the body of a *ast.FuncDecl of p.
-func insideFuncBody(p *packages.Package, pos string) bool {
-	if p.Fset == nil {
-		return false
-	}
-	file, line, col, ok := splitErrorPos(pos)
-	if !ok {
+// insideFuncBody reports whether pos lies within the body of a
+// *ast.FuncDecl in p's syntax.
+func insideFuncBody(p *packages.Package, pos token.Pos) bool {
+	if !pos.IsValid() {
 		return false
 	}
 	for _, f := range p.Syntax {
-		if p.Fset.Position(f.Pos()).Filename != file {
+		if pos < f.FileStart || pos > f.FileEnd {
 			continue
 		}
 		for _, d := range f.Decls {
-			fd, ok := d.(*ast.FuncDecl)
-			if !ok || fd.Body == nil {
-				continue
-			}
-			start, end := p.Fset.Position(fd.Body.Pos()), p.Fset.Position(fd.Body.End())
-			if !before(line, col, start.Line, start.Column) && before(line, col, end.Line, end.Column) {
+			if fd, ok := d.(*ast.FuncDecl); ok && fd.Body != nil && fd.Body.Pos() <= pos && pos < fd.Body.End() {
 				return true
 			}
 		}
 	}
 	return false
-}
-
-// splitErrorPos parses "file:line:col". A file name may itself contain
-// colons on some systems, so the last two fields are taken as the numbers.
-func splitErrorPos(pos string) (file string, line, col int, ok bool) {
-	i := strings.LastIndexByte(pos, ':')
-	if i < 0 {
-		return "", 0, 0, false
-	}
-	j := strings.LastIndexByte(pos[:i], ':')
-	if j < 0 {
-		return "", 0, 0, false
-	}
-	line, err1 := strconv.Atoi(pos[j+1 : i])
-	col, err2 := strconv.Atoi(pos[i+1:])
-	if err1 != nil || err2 != nil || line <= 0 {
-		return "", 0, 0, false
-	}
-	return pos[:j], line, col, true
-}
-
-// before reports whether (l1, c1) is strictly before (l2, c2).
-func before(l1, c1, l2, c2 int) bool {
-	return l1 < l2 || l1 == l2 && c1 < c2
 }
 
 // checkSSAImports verifies every created package's imports were also created,

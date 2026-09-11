@@ -55,6 +55,10 @@ All notable user-visible changes to caliper. Format roughly follows
   dependency with a body-only error (importer analysed, calls its clean
   function; the dependency's functions have no bodies) and one with a
   declaration error (importer dropped, as before), under both loads.
+  An error is placed by its source position, so `//line` directives in
+  generated code cannot move a declaration error into a body; and the
+  notice go/packages adds when caliper was built with an older Go than
+  the `go` command it runs does not count as an error.
   Default-load timing on steward is unchanged (load 1.6–1.7 s, call
   graph 3.8–4.0 s over the now-complete 117 packages; one run of three
   hit 11.4 s on a busy machine).
