@@ -15,6 +15,7 @@ import (
 	"golang.org/x/tools/go/callgraph/cha"
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/callgraph/vta"
+	"golang.org/x/tools/go/packages"
 	"golang.org/x/tools/go/ssa"
 	"golang.org/x/tools/go/ssa/ssautil"
 )
@@ -61,7 +62,7 @@ type CallSite struct {
 // default and works on library code without a main function.
 func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *InterProceduralContext, err error) {
 	// Build SSA program from all loaded packages.
-	prog, ssaPkgs := ssautil.AllPackages(engine.Packages(), ssa.SanityCheckFunctions)
+	prog, ssaPkgs := createProgram(engine, ssa.SanityCheckFunctions)
 
 	// prog.Build() panics on an inconsistent program — most often
 	// "unsatisfied import: Program.CreatePackage(X) was not called" when a
@@ -99,6 +100,81 @@ func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *
 		CallGraph: cg,
 		Algorithm: usedAlgo,
 	}, nil
+}
+
+// createProgram creates the SSA program and a package for everything the
+// load reached. Under the default load that is ssautil.AllPackages: every
+// package from its syntax. Under EngineOptions.DepsFromExportData the
+// loaded packages are created from syntax and every dependency from its
+// types alone, so no dependency function has a body — including one
+// go/packages fell back to type-checking from source because `go list
+// -export` produced no export data for it (it does not compile on this
+// toolchain). That fallback skips function bodies, and the SSA builder
+// has no guard against an AST the type checker did not visit.
+//
+// The fallback also decides which loaded packages are analysed. The
+// driver attaches its compile error to such a dependency, which makes
+// go/packages mark it and every importer IllTyped, and ssautil would then
+// drop the importing loaded packages from the program — packages whose
+// own type-check was clean, since go/types does not need a dependency to
+// compile, only to type-check its declarations. So this does not read
+// IllTyped: a package is skipped when it, or a package it imports
+// transitively, has an error that is not the driver's (a parse or type
+// error, or export data that could not be read). That is the rule the
+// default load applies through IllTyped minus the compile errors, and
+// since a dependency's bodies are never type-checked here, minus type
+// errors inside them too — which the default load does see, and drops
+// importers for (#30).
+func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.Package) {
+	if !engine.opts.DepsFromExportData {
+		return ssautil.AllPackages(engine.Packages(), mode)
+	}
+	prog := ssa.NewProgram(engine.fset, mode)
+	roots := make(map[*packages.Package]bool, len(engine.pkgs))
+	for _, p := range engine.pkgs {
+		roots[p] = true
+	}
+	broken := make(map[*packages.Package]bool)
+	// Visit runs post-order, so a package's imports are classified
+	// before it is.
+	packages.Visit(engine.pkgs, nil, func(p *packages.Package) {
+		b := hasNonDriverError(p)
+		for _, imp := range p.Imports {
+			if broken[imp] {
+				b = true
+				break
+			}
+		}
+		broken[p] = b
+		if b || p.Types == nil {
+			return
+		}
+		if roots[p] {
+			prog.CreatePackage(p.Types, p.Syntax, p.TypesInfo, true)
+		} else {
+			prog.CreatePackage(p.Types, nil, nil, true)
+		}
+	})
+	ssaPkgs := make([]*ssa.Package, len(engine.pkgs))
+	for i, p := range engine.pkgs {
+		if p.Types != nil {
+			ssaPkgs[i] = prog.Package(p.Types) // nil when skipped
+		}
+	}
+	return prog, ssaPkgs
+}
+
+// hasNonDriverError reports whether p carries an error other than one the
+// go list driver reported. Under a load without NeedDeps the driver's
+// error on a dependency is that `go list -export` could not compile it,
+// which says nothing about whether its types are usable.
+func hasNonDriverError(p *packages.Package) bool {
+	for _, e := range p.Errors {
+		if e.Kind != packages.ListError {
+			return true
+		}
+	}
+	return false
 }
 
 // checkSSAImports verifies every created package's imports were also created,

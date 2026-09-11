@@ -3,6 +3,56 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **`EngineOptions.DepsFromExportData`** type-checks the loaded packages
+  from source and takes every dependency's types from the compiler's
+  export data (`go list -export`) instead of parsing and type-checking
+  its source. It drops `packages.NeedDeps` from the load; under it the
+  SSA program is built with the loaded packages from syntax and every
+  dependency from types alone (#28, for trendvidia/alidade). Default
+  `false`, everything unchanged.
+
+  Measured on steward (117 packages, 1,293 reached with dependencies,
+  warm build cache, three interleaved runs each, median and range):
+
+  | | Load | SSA + CHA call graph |
+  |---|---|---|
+  | default | 1.93 s (1.4–2.5) | 3.46 s (2.5–5.1) |
+  | `DepsFromExportData` | 0.99 s (0.98–1.3) | 0.36 s (0.29–0.50) |
+
+  The first split load on a tree whose dependencies are not yet in the
+  build cache pays their compilation once (3.4 s on steward, where they
+  were).
+
+  **Limitation:** no interprocedural analysis through dependency code. A
+  dependency's SSA functions have no bodies, so no call-graph edge leaves
+  one (steward: 8,150,734 such edges by default, 0 under the option) and
+  no taint flows through one. Calls from a loaded package into a
+  dependency are still edges to that function; dynamic calls resolve
+  among fewer candidates, since a package reached only through a
+  dependency carries just the declarations its importers reference
+  (steward: 176,011 edges into dependencies by default, 22,519 under the
+  option). A dependency that does not compile on the host's toolchain has
+  no export data and is type-checked from source with its bodies skipped;
+  it is still bodiless in the SSA program, and the loaded packages that
+  import it are analysed. Pinned by `TestDepsFromExportData_*` on a
+  fixture with a third-party dependency (`github.com/google/uuid`) and a
+  local one that type-checks but does not compile: the call-graph edges
+  among the loaded packages are identical under both modes, edge for
+  edge.
+
+  On steward the within-module graph is not identical but a strict
+  superset: 13,119 edges over all 117 packages against 6,366 over 81,
+  because grpc's `internal/transport` has a type error inside a function
+  body on this toolchain (`undefined: http2.TrailerPrefix`), the default
+  load sees it and drops the 36 packages importing it from the SSA
+  program, and the split load never type-checks that body. The 6,366 are
+  all present under the option and every extra edge touches one of the
+  36. The default load's drop is #30.
+
 ## v1.4.0 — 2026-09-11
 
 ### Added

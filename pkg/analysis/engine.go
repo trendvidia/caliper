@@ -65,6 +65,43 @@ type EngineOptions struct {
 	// by default, and not touched by DefaultOptions.
 	Env []string
 
+	// DepsFromExportData type-checks the load's own packages — the
+	// patterns, ./... by default — from source, and takes every
+	// dependency's types from the compiler's export data instead of its
+	// source (default: false, everything from source). It drops
+	// packages.NeedDeps from the load mode: go/packages then runs
+	// `go list -export`, which compiles the dependencies into the build
+	// cache (once per dependency version), and reads their types from
+	// there instead of parsing and type-checking them.
+	//
+	// What a consumer sees: the loaded packages are unchanged, with
+	// Syntax, TypesInfo and SSA bodies. A dependency has Types but no
+	// Syntax and no TypesInfo, and its SSA functions have no bodies, so
+	// there is NO interprocedural analysis through dependency code: no
+	// call-graph edge leaves a dependency function, and no taint flows
+	// through one. A call from a loaded package into a dependency is
+	// still an edge to that function. A package the load reaches only
+	// through a dependency carries just the declarations its importers'
+	// export data references, not its whole scope.
+	//
+	// A dependency that does not compile on this toolchain has no export
+	// data, and go/packages type-checks it from source instead, with
+	// function bodies skipped; the engine still gives its SSA functions
+	// no bodies, and the loaded packages that import it are analysed
+	// (see createProgram). That is more than the default load does: a
+	// type error inside a dependency's function body is seen by the
+	// default load and drops every loaded package importing it from the
+	// SSA program (#30), and is never seen by this one. On steward, 81
+	// of 117 packages reach the program by default and 117 under this
+	// option; the default's call graph is a strict subset. A
+	// standard-library load through an overlay is the no-export-data
+	// case for every package, since an overlay invalidates export data.
+	//
+	// TestDepsFromExportData_CallGraphWithinModuleIdentical pins that
+	// the call-graph edges among the loaded packages are the same under
+	// both modes.
+	DepsFromExportData bool
+
 	// pathRemap remaps file paths in output (internal, set by engine).
 	pathRemap *pathRemap
 }
@@ -88,22 +125,32 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		patterns = detectPatterns(dir)
 	}
 
+	// NeedImports is load-bearing, not decorative: NeedDeps only
+	// propagates this mode INTO the packages already in Imports, and
+	// Imports itself is populated by NeedImports. Without it every
+	// pkg.Imports is empty, so ssautil.AllPackages never calls
+	// CreatePackage for a dependency and prog.Build() panics on the
+	// first unsatisfied import — which is every real package, since
+	// they all import at least "context" or "fmt".
+	mode := packages.NeedName |
+		packages.NeedFiles |
+		packages.NeedImports |
+		packages.NeedSyntax |
+		packages.NeedTypes |
+		packages.NeedTypesInfo |
+		packages.NeedModule
+	// NeedDeps is what makes go/packages parse and type-check every
+	// dependency from source. Without it the roots are still loaded from
+	// source, their imports' types come from export data (`go list
+	// -export`), and packages further down get a types.Package that the
+	// export reader fills with what the importers reference. The import
+	// graph is materialized either way, so the SSA program has a package
+	// for every import and prog.Build() has nothing to panic on.
+	if !opts.DepsFromExportData {
+		mode |= packages.NeedDeps
+	}
 	cfg := &packages.Config{
-		// NeedImports is load-bearing, not decorative: NeedDeps only
-		// propagates this mode INTO the packages already in Imports, and
-		// Imports itself is populated by NeedImports. Without it every
-		// pkg.Imports is empty, so ssautil.AllPackages never calls
-		// CreatePackage for a dependency and prog.Build() panics on the
-		// first unsatisfied import — which is every real package, since
-		// they all import at least "context" or "fmt".
-		Mode: packages.NeedName |
-			packages.NeedFiles |
-			packages.NeedImports |
-			packages.NeedSyntax |
-			packages.NeedTypes |
-			packages.NeedTypesInfo |
-			packages.NeedDeps |
-			packages.NeedModule,
+		Mode:  mode,
 		Dir:   dir,
 		Tests: opts.Tests,
 	}
