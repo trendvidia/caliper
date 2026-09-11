@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 
@@ -93,6 +94,11 @@ type EngineOptions struct {
 	// created from its types, #30). A standard-library load through an
 	// overlay is the no-export-data case for every package, since an
 	// overlay invalidates export data.
+	//
+	// Every load refuses a go command from a newer release than the Go
+	// this program was built with; this mode is the one that would
+	// otherwise end the PROCESS rather than the load. See
+	// checkToolchainSkew.
 	//
 	// TestDepsFromExportData_CallGraphWithinModuleIdentical pins that
 	// the call-graph edges among the loaded packages are the same under
@@ -194,6 +200,12 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 			cfg.Env = os.Environ()
 		}
 		cfg.Env = append(cfg.Env, opts.Env...)
+	}
+
+	// A toolchain newer than this binary is refused before the load
+	// rather than during it, in either mode.
+	if err := checkToolchainSkew(cfg.Env, dir, opts.DepsFromExportData); err != nil {
+		return nil, err
 	}
 
 	pkgs, err := packages.Load(cfg, patterns...)
@@ -413,6 +425,90 @@ func hasCompiledToolchain(goroot string) bool {
 	}
 	// Should have at least one platform directory (e.g., darwin_arm64).
 	return len(entries) > 0
+}
+
+// goVersionOf reports the version of the go command that would run the
+// load — `go env GOVERSION` under the load's own environment and
+// directory, so a GOTOOLCHAIN in EngineOptions.Env is accounted for. It
+// is a variable so a test can simulate a toolchain the machine does not
+// have.
+var goVersionOf = func(env []string, dir string) (string, error) {
+	cmd := exec.Command("go", "env", "GOVERSION")
+	cmd.Env = env // nil inherits the process environment
+	cmd.Dir = dir
+	out, err := cmd.Output()
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(out)), nil
+}
+
+// checkToolchainSkew refuses a load under a go command from a newer Go
+// release than this program was built with. Neither load mode survives
+// one, in different ways.
+//
+// With DepsFromExportData the process dies. go/packages asks for complete
+// types for every direct import of a package it type-checks from source,
+// and fills them from export data. A dependency that does not compile has
+// no export data and is type-checked from source; when reading one of ITS
+// imports' export data then fails — which is what a newer toolchain's
+// format does — go/packages calls log.Fatalf from inside its importer
+// (x/tools v0.44.0 go/packages/packages.go:1218, "internal error: package
+// %q without types was imported from %q"). That ends the process, and an
+// MCP server with it; log.Fatalf cannot be recovered, so the only defence
+// is not to start.
+//
+// The default load returns, and returns something wrong: the older type
+// checker cannot process the newer toolchain's sources, so packages fail
+// for real and their importers go with them. Measured on steward with a
+// caliper built by go1.26.7 against go1.27.1: 15 of 117 packages in the
+// SSA program, no error anywhere, a call graph missing 87% of the module.
+// Refusing it is a deliberate choice of correctness over compatibility
+// with a skewed setup that produced quiet, wrong answers (#35).
+//
+// This does not catch every route to the fatal — export data unreadable
+// for another reason, a truncated build cache say, reaches it too — only
+// the cause that is predictable before the load.
+func checkToolchainSkew(env []string, dir string, exportData bool) error {
+	tool, err := goVersionOf(env, dir)
+	if err != nil {
+		// No go command to ask: let the load report what it finds.
+		return nil
+	}
+	return skewError(runtime.Version(), tool, exportData)
+}
+
+// skewError reports the refusal when self is an older Go release than
+// tool, naming the consequence the load would have had. A version either
+// side cannot parse — a devel build, a fork's spelling — is not a
+// refusal: an unnecessary failure is worse than what this guards, which
+// needs a real release gap to happen.
+func skewError(self, tool string, exportData bool) error {
+	s, sok := goMinor(self)
+	t, tok := goMinor(tool)
+	if !sok || !tok || s >= t {
+		return nil
+	}
+	consequence := "the older type checker cannot process that toolchain's sources, " +
+		"so the load would analyse a fraction of the module and report no error"
+	if exportData {
+		consequence = "it cannot read that toolchain's export data, " +
+			"so the load would end the process rather than return an error"
+	}
+	return fmt.Errorf(
+		"this program was built with %s but the go command is %s: %s (see caliper #35). "+
+			"Rebuild with %s or newer, or point it at a matching toolchain with GOTOOLCHAIN",
+		self, tool, consequence, tool)
+}
+
+// goMinor parses the minor release out of a Go version string
+// ("go1.27.1" → 27), the way go/packages does when it compares the two.
+func goMinor(v string) (int, bool) {
+	var n int
+	if _, err := fmt.Sscanf(v, "go1.%d", &n); err != nil {
+		return 0, false
+	}
+	return n, true
 }
 
 // hasEnv checks if an env slice contains a specific key=value pair.
