@@ -56,10 +56,15 @@ func TestDepsFromExportData_LoadShape(t *testing.T) {
 		t.Run(fmt.Sprintf("DepsFromExportData=%v", split), func(t *testing.T) {
 			engine := exportdepsFixture(t, EngineOptions{SkipCgo: true, DepsFromExportData: split})
 			pkgs := engine.Packages()
-			if len(pkgs) != 1 || pkgs[0].PkgPath != "exportdeps" {
-				t.Fatalf("loaded packages = %v, want [exportdeps]", pkgs)
+			var root *packages.Package
+			for _, p := range pkgs {
+				if p.PkgPath == "exportdeps" {
+					root = p
+				}
 			}
-			root := pkgs[0]
+			if len(pkgs) != 3 || root == nil {
+				t.Fatalf("loaded packages = %v, want exportdeps and its two sub-packages", pkgs)
+			}
 			if len(root.Syntax) == 0 || root.TypesInfo == nil || root.Types == nil || !root.Types.Complete() {
 				t.Fatalf("module package lacks syntax or types: Syntax=%d TypesInfo=%v", len(root.Syntax), root.TypesInfo != nil)
 			}
@@ -111,7 +116,7 @@ func edgeKey(e *Engine, caller, callee *ssa.Function, site ssa.CallInstruction) 
 // inModule reports whether fn is a function of the fixture module. A
 // synthetic function with no package (a wrapper, a bound method) is not.
 func inModule(fn *ssa.Function) bool {
-	return fn.Pkg != nil && fn.Pkg.Pkg.Path() == "exportdeps"
+	return fn.Pkg != nil && (fn.Pkg.Pkg.Path() == "exportdeps" || strings.HasPrefix(fn.Pkg.Pkg.Path(), "exportdeps/"))
 }
 
 // callGraphEdges splits the CHA call graph into the edges whose caller and
@@ -162,6 +167,7 @@ func TestDepsFromExportData_CallGraphWithinModuleIdentical(t *testing.T) {
 		"exportdeps.Tag -> exportdeps.describe",
 		"exportdeps.Total -> (exportdeps.Square).Area",
 		"exportdeps.Total -> (exportdeps.Circle).Area",
+		"exportdeps/usesbodyerr.Use -> exportdeps/usesbodyerr.helper",
 	} {
 		if !slices.ContainsFunc(fullWithin, func(k string) bool { return strings.HasPrefix(k, want+" @") }) {
 			t.Errorf("default mode: within-module edge %q missing from\n%s", want, strings.Join(fullWithin, "\n"))
@@ -179,6 +185,7 @@ func TestDepsFromExportData_CallGraphWithinModuleIdentical(t *testing.T) {
 		for _, want := range []string{
 			"exportdeps.Tag -> github.com/google/uuid.New",
 			"exportdeps.Boundary -> local.example/nocompile.Double",
+			"exportdeps/usesbodyerr.Use -> local.example/bodyerr.Good",
 		} {
 			if !slices.ContainsFunc(edges, func(k string) bool { return strings.HasPrefix(k, want+" @") }) {
 				t.Errorf("edge %q missing from\n%s", want, strings.Join(edges, "\n"))
@@ -252,6 +259,103 @@ func TestDepsFromExportData_NoDependencyBodies(t *testing.T) {
 	if p := findImport(full.Packages(), "github.com/google/uuid"); p != nil {
 		if fn := fullIPC.Program.Package(p.Types).Func("New"); fn == nil || len(fn.Blocks) == 0 {
 			t.Errorf("default mode: uuid.New has no body; the comparison above is not measuring the split")
+		}
+	}
+}
+
+// TestIllTypedDependency_BodyErrorKeepsImporters pins #30 under both
+// loads: a loaded package whose dependency has a type error only inside
+// a function body is in the SSA program, calling the dependency's clean
+// function, while the dependency itself is there from its types alone;
+// a loaded package whose dependency has a type error in a declaration
+// is not, as ssautil's IllTyped rule always had it.
+func TestIllTypedDependency_BodyErrorKeepsImporters(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DepsFromExportData=%v", split), func(t *testing.T) {
+			engine := exportdepsFixture(t, EngineOptions{SkipCgo: true, DepsFromExportData: split})
+			pkgs := engine.Packages()
+
+			// The condition go/packages reports, so the test is measuring it.
+			for _, path := range []string{"exportdeps/usesbodyerr", "exportdeps/usesdeclerr"} {
+				p := findImport(pkgs, path)
+				if p == nil {
+					t.Fatalf("%s not loaded", path)
+				}
+				if len(p.Errors) != 0 || !p.IllTyped {
+					t.Fatalf("%s: errors=%v illTyped=%v; want a clean package that go/packages marks IllTyped through its import", path, p.Errors, p.IllTyped)
+				}
+			}
+			bodyerr := findImport(pkgs, "local.example/bodyerr")
+			declerr := findImport(pkgs, "local.example/declerr")
+			if bodyerr == nil || declerr == nil {
+				t.Fatal("fixture dependencies not reachable")
+			}
+			if split {
+				// Bodies are skipped: the body error is not seen, the
+				// declaration error is, and both carry the driver's compile error.
+				if hasNonDriverError(bodyerr) || !hasNonDriverError(declerr) {
+					t.Fatalf("split: bodyerr errors=%v declerr errors=%v", bodyerr.Errors, declerr.Errors)
+				}
+			} else if !hasNonDriverError(bodyerr) || !hasNonDriverError(declerr) {
+				t.Fatalf("default: bodyerr errors=%v declerr errors=%v; want type errors on both", bodyerr.Errors, declerr.Errors)
+			}
+			if hasDeclarationError(bodyerr) || !hasDeclarationError(declerr) {
+				t.Errorf("hasDeclarationError: bodyerr=%v declerr=%v, want false and true", hasDeclarationError(bodyerr), hasDeclarationError(declerr))
+			}
+
+			ipc, err := engine.InterProcedural()
+			if err != nil {
+				t.Fatalf("InterProcedural: %v", err)
+			}
+			use := ipc.FindFunctionByName("exportdeps/usesbodyerr", "Use")
+			if use == nil {
+				t.Fatal("usesbodyerr.Use is not in the SSA program; its dependency's body error dropped it")
+			}
+			var callees []string
+			for _, c := range ipc.CalleesOf(use) {
+				callees = append(callees, c.String())
+			}
+			slices.Sort(callees)
+			if want := []string{"exportdeps/usesbodyerr.helper", "local.example/bodyerr.Good"}; !slices.Equal(callees, want) {
+				t.Errorf("callees of usesbodyerr.Use = %v, want %v", callees, want)
+			}
+			sp := ipc.Program.Package(bodyerr.Types)
+			if sp == nil {
+				t.Fatal("bodyerr is not in the SSA program")
+			}
+			for _, name := range []string{"Good", "Bad"} {
+				if fn := sp.Func(name); fn == nil || len(fn.Blocks) != 0 {
+					t.Errorf("bodyerr.%s: present=%v with body=%v; want present from types alone, no body", name, fn != nil, fn != nil && len(fn.Blocks) != 0)
+				}
+			}
+
+			if fn := ipc.FindFunctionByName("exportdeps/usesdeclerr", "Use"); fn != nil {
+				t.Errorf("usesdeclerr.Use is in the SSA program; a dependency with a declaration error must drop its importers")
+			}
+			if ipc.Program.Package(declerr.Types) != nil {
+				t.Errorf("declerr is in the SSA program; want it skipped")
+			}
+		})
+	}
+}
+
+// TestSplitErrorPos pins the parsing of a packages.Error position.
+func TestSplitErrorPos(t *testing.T) {
+	for _, tc := range []struct {
+		pos       string
+		file      string
+		line, col int
+		ok        bool
+	}{
+		{"/a/b.go:12:7", "/a/b.go", 12, 7, true},
+		{"C:\\x\\b.go:3:1", "C:\\x\\b.go", 3, 1, true},
+		{"-", "", 0, 0, false},
+		{"b.go:x:1", "", 0, 0, false},
+		{"", "", 0, 0, false},
+	} {
+		file, line, col, ok := splitErrorPos(tc.pos)
+		if file != tc.file || line != tc.line || col != tc.col || ok != tc.ok {
+			t.Errorf("splitErrorPos(%q) = %q,%d,%d,%v; want %q,%d,%d,%v", tc.pos, file, line, col, ok, tc.file, tc.line, tc.col, tc.ok)
 		}
 	}
 }
