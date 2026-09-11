@@ -10,6 +10,8 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
+	"strconv"
+	"strings"
 
 	"golang.org/x/tools/go/callgraph"
 	"golang.org/x/tools/go/callgraph/cha"
@@ -103,32 +105,39 @@ func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *
 }
 
 // createProgram creates the SSA program and a package for everything the
-// load reached. Under the default load that is ssautil.AllPackages: every
-// package from its syntax. Under EngineOptions.DepsFromExportData the
-// loaded packages are created from syntax and every dependency from its
-// types alone, so no dependency function has a body — including one
-// go/packages fell back to type-checking from source because `go list
-// -export` produced no export data for it (it does not compile on this
-// toolchain). That fallback skips function bodies, and the SSA builder
-// has no guard against an AST the type checker did not visit.
+// load reached, and decides which of them are analysed.
 //
-// The fallback also decides which loaded packages are analysed. The
-// driver attaches its compile error to such a dependency, which makes
-// go/packages mark it and every importer IllTyped, and ssautil would then
-// drop the importing loaded packages from the program — packages whose
-// own type-check was clean, since go/types does not need a dependency to
-// compile, only to type-check its declarations. So this does not read
-// IllTyped: a package is skipped when it, or a package it imports
-// transitively, has an error that is not the driver's (a parse or type
-// error, or export data that could not be read). That is the rule the
-// default load applies through IllTyped minus the compile errors, and
-// since a dependency's bodies are never type-checked here, minus type
-// errors inside them too — which the default load does see, and drops
-// importers for (#30).
+// ssautil.AllPackages skips every package go/packages marks IllTyped,
+// and IllTyped propagates: one dependency with an error removes every
+// loaded package that imports it, transitively, from the program —
+// silently, since the loaded package's own type-check was clean and it
+// is still in Engine.Packages(). On steward one grpc package with a type
+// error inside a function body took 36 of 117 loaded packages with it
+// (#30). A function body cannot change a package's declarations, and a
+// dependency's declarations are all its importers need, so this does not
+// read IllTyped:
+//
+//   - a package is BROKEN when it has an error outside a function body —
+//     a parse error, a type error in a declaration, export data that
+//     could not be read — or imports a broken package, transitively.
+//     Broken packages are skipped, and so is everything importing them,
+//     which is what IllTyped does for every error;
+//   - a package with errors only inside function bodies is created from
+//     its types alone, so its declarations are there for its importers
+//     and its bodies, which the type checker did not finish, never reach
+//     the SSA builder (which has no guard against an AST the checker did
+//     not visit);
+//   - under EngineOptions.DepsFromExportData every dependency is created
+//     from types alone, whatever its origin: one read from export data
+//     has no syntax, and one go/packages fell back to type-checking from
+//     source because `go list -export` could not compile it had its
+//     bodies skipped. The driver's compile error on such a package is a
+//     ListError and says nothing about its types, so ListError never
+//     counts; a listing failure that matters surfaces as a type error in
+//     the importer.
+//   - everything else is created from its syntax: the loaded packages,
+//     and under the default load the dependencies too.
 func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.Package) {
-	if !engine.opts.DepsFromExportData {
-		return ssautil.AllPackages(engine.Packages(), mode)
-	}
 	prog := ssa.NewProgram(engine.fset, mode)
 	roots := make(map[*packages.Package]bool, len(engine.pkgs))
 	for _, p := range engine.pkgs {
@@ -138,7 +147,7 @@ func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.P
 	// Visit runs post-order, so a package's imports are classified
 	// before it is.
 	packages.Visit(engine.pkgs, nil, func(p *packages.Package) {
-		b := hasNonDriverError(p)
+		b := hasDeclarationError(p)
 		for _, imp := range p.Imports {
 			if broken[imp] {
 				b = true
@@ -149,10 +158,11 @@ func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.P
 		if b || p.Types == nil {
 			return
 		}
-		if roots[p] {
-			prog.CreatePackage(p.Types, p.Syntax, p.TypesInfo, true)
-		} else {
+		typesOnly := hasNonDriverError(p) || (engine.opts.DepsFromExportData && !roots[p])
+		if typesOnly {
 			prog.CreatePackage(p.Types, nil, nil, true)
+		} else {
+			prog.CreatePackage(p.Types, p.Syntax, p.TypesInfo, true)
 		}
 	})
 	ssaPkgs := make([]*ssa.Package, len(engine.pkgs))
@@ -175,6 +185,78 @@ func hasNonDriverError(p *packages.Package) bool {
 		}
 	}
 	return false
+}
+
+// hasDeclarationError reports whether p has an error that can have
+// reached its declarations: any error that is not the driver's and does
+// not lie inside the body of a function declaration in p's syntax. A
+// parse error counts whatever its position, since the AST after it is
+// not the file's. An error whose position cannot be placed counts too.
+func hasDeclarationError(p *packages.Package) bool {
+	for _, e := range p.Errors {
+		switch e.Kind {
+		case packages.ListError:
+			continue
+		case packages.TypeError:
+			if insideFuncBody(p, e.Pos) {
+				continue
+			}
+		}
+		return true
+	}
+	return false
+}
+
+// insideFuncBody reports whether the position string of a packages.Error
+// ("file:line:col") lies within the body of a *ast.FuncDecl of p.
+func insideFuncBody(p *packages.Package, pos string) bool {
+	if p.Fset == nil {
+		return false
+	}
+	file, line, col, ok := splitErrorPos(pos)
+	if !ok {
+		return false
+	}
+	for _, f := range p.Syntax {
+		if p.Fset.Position(f.Pos()).Filename != file {
+			continue
+		}
+		for _, d := range f.Decls {
+			fd, ok := d.(*ast.FuncDecl)
+			if !ok || fd.Body == nil {
+				continue
+			}
+			start, end := p.Fset.Position(fd.Body.Pos()), p.Fset.Position(fd.Body.End())
+			if !before(line, col, start.Line, start.Column) && before(line, col, end.Line, end.Column) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// splitErrorPos parses "file:line:col". A file name may itself contain
+// colons on some systems, so the last two fields are taken as the numbers.
+func splitErrorPos(pos string) (file string, line, col int, ok bool) {
+	i := strings.LastIndexByte(pos, ':')
+	if i < 0 {
+		return "", 0, 0, false
+	}
+	j := strings.LastIndexByte(pos[:i], ':')
+	if j < 0 {
+		return "", 0, 0, false
+	}
+	line, err1 := strconv.Atoi(pos[j+1 : i])
+	col, err2 := strconv.Atoi(pos[i+1:])
+	if err1 != nil || err2 != nil || line <= 0 {
+		return "", 0, 0, false
+	}
+	return pos[:j], line, col, true
+}
+
+// before reports whether (l1, c1) is strictly before (l2, c2).
+func before(l1, c1, l2, c2 int) bool {
+	return l1 < l2 || l1 == l2 && c1 < c2
 }
 
 // checkSSAImports verifies every created package's imports were also created,

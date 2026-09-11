@@ -88,14 +88,11 @@ type EngineOptions struct {
 	// data, and go/packages type-checks it from source instead, with
 	// function bodies skipped; the engine still gives its SSA functions
 	// no bodies, and the loaded packages that import it are analysed
-	// (see createProgram). That is more than the default load does: a
-	// type error inside a dependency's function body is seen by the
-	// default load and drops every loaded package importing it from the
-	// SSA program (#30), and is never seen by this one. On steward, 81
-	// of 117 packages reach the program by default and 117 under this
-	// option; the default's call graph is a strict subset. A
-	// standard-library load through an overlay is the no-export-data
-	// case for every package, since an overlay invalidates export data.
+	// (see createProgram, which applies the same rule to the default
+	// load: a dependency with errors only inside function bodies is
+	// created from its types, #30). A standard-library load through an
+	// overlay is the no-export-data case for every package, since an
+	// overlay invalidates export data.
 	//
 	// TestDepsFromExportData_CallGraphWithinModuleIdentical pins that
 	// the call-graph edges among the loaded packages are the same under

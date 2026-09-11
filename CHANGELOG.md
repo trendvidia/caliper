@@ -5,6 +5,33 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Fixed
+
+- **A dependency with a type error inside a function body no longer
+  drops its importers from the SSA program** (#30). The program was
+  built with `ssautil.AllPackages`, which skips every package go/packages
+  marks `IllTyped` — and `IllTyped` propagates, so one dependency with
+  any error removed every loaded package importing it, transitively,
+  from the call graph, silently: the loaded package's own type-check was
+  clean and it stayed in `Engine.Packages()`. On steward, grpc's
+  `internal/transport` fails on go-plus 1.27.1 with `undefined:
+  http2.TrailerPrefix` inside a function body, and 36 of 117 packages
+  had no SSA package and no call-graph nodes. Now a package is skipped
+  only for an error outside a function body — a parse error, a type
+  error in a declaration, export data that could not be read — or for
+  importing such a package; one whose errors are all inside function
+  bodies is created from its types alone, so its declarations are there
+  for its importers and its unfinished bodies never reach the SSA
+  builder. steward: 117 of 117 packages in the SSA program under the
+  default load, with the same 13,119 within-module edges as under
+  `DepsFromExportData`, edge for edge. Pinned on the fixture by a
+  dependency with a body-only error (importer analysed, calls its clean
+  function; the dependency's functions have no bodies) and one with a
+  declaration error (importer dropped, as before), under both loads.
+  Default-load timing on steward is unchanged (load 1.6–1.7 s, call
+  graph 3.8–4.0 s over the now-complete 117 packages; one run of three
+  hit 11.4 s on a busy machine).
+
 ### Added
 
 - **`EngineOptions.DepsFromExportData`** type-checks the loaded packages
