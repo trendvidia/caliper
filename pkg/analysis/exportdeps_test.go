@@ -2,6 +2,10 @@ package analysis
 
 import (
 	"fmt"
+	"go/ast"
+	"go/parser"
+	"go/token"
+	"go/types"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -339,23 +343,96 @@ func TestIllTypedDependency_BodyErrorKeepsImporters(t *testing.T) {
 	}
 }
 
-// TestSplitErrorPos pins the parsing of a packages.Error position.
-func TestSplitErrorPos(t *testing.T) {
+// TestHasDeclarationError_VersionSkewNotice pins that the notice
+// go/packages appends to every package with errors when the program was
+// built with an older Go than the `go` command on PATH does not make a
+// body-only error a declaration error. No test run has the skew — the
+// test binary is built by the go command that lists — so the notice is
+// added by hand, worded as x/tools v0.44.0 words it. Unreadable export
+// data, the other UnknownError at "-", still counts.
+func TestHasDeclarationError_VersionSkewNotice(t *testing.T) {
+	engine := exportdepsFixture(t, EngineOptions{SkipCgo: true})
+	bodyerr := findImport(engine.Packages(), "local.example/bodyerr")
+	if bodyerr == nil || len(bodyerr.TypeErrors) == 0 || hasDeclarationError(bodyerr) {
+		t.Fatal("fixture: want local.example/bodyerr loaded with body-only type errors")
+	}
+	withError := func(e packages.Error) *packages.Package {
+		p := *bodyerr
+		p.Errors = append(slices.Clone(bodyerr.Errors), e)
+		return &p
+	}
+	skewed := withError(packages.Error{
+		Pos:  "-",
+		Msg:  "This application uses version go1.26 of the source-processing packages but runs version go1.27 of 'go list'. It may fail to process source files that rely on newer language features. If so, rebuild the application using a newer version of Go.",
+		Kind: packages.UnknownError,
+	})
+	if hasDeclarationError(skewed) {
+		t.Errorf("the version-skew notice made bodyerr a declaration error: %v", skewed.Errors)
+	}
+	// The notice also rides on a driver-only error, which must stay driver-only.
+	driverOnly := *bodyerr
+	driverOnly.Errors = []packages.Error{{Pos: "-", Msg: "compile error", Kind: packages.ListError}, skewed.Errors[len(skewed.Errors)-1]}
+	if hasNonDriverError(&driverOnly) {
+		t.Errorf("the version-skew notice counts as a non-driver error: %v", driverOnly.Errors)
+	}
+	unreadable := withError(packages.Error{Pos: "-", Msg: "reading export data: unexpected EOF", Kind: packages.UnknownError})
+	if !hasDeclarationError(unreadable) {
+		t.Errorf("unreadable export data is not a declaration error: %v", unreadable.Errors)
+	}
+}
+
+// typeCheckedFile type-checks src as the only file of a package and
+// returns it shaped as go/packages would: Errors and TypeErrors, one
+// entry each per type error, the Errors position remapped by //line.
+func typeCheckedFile(t *testing.T, name, src string) *packages.Package {
+	t.Helper()
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, name, src, parser.ParseComments)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &packages.Package{PkgPath: "p", Fset: fset, Syntax: []*ast.File{f}}
+	conf := types.Config{Error: func(err error) {
+		te := err.(types.Error)
+		p.TypeErrors = append(p.TypeErrors, te)
+		p.Errors = append(p.Errors, packages.Error{Pos: te.Fset.Position(te.Pos).String(), Msg: te.Msg, Kind: packages.TypeError})
+	}}
+	p.Types, _ = conf.Check("p", fset, []*ast.File{f}, nil)
+	return p
+}
+
+// TestHasDeclarationError_LineDirectives pins that an error is placed by
+// its position in the source, not by the //line-remapped position
+// go/packages reports: generated code (goyacc, cgo) remaps a body and a
+// declaration to overlapping or different file:line ranges.
+func TestHasDeclarationError_LineDirectives(t *testing.T) {
 	for _, tc := range []struct {
-		pos       string
-		file      string
-		line, col int
-		ok        bool
+		name, src, pos string
+		decl           bool
 	}{
-		{"/a/b.go:12:7", "/a/b.go", 12, 7, true},
-		{"C:\\x\\b.go:3:1", "C:\\x\\b.go", 3, 1, true},
-		{"-", "", 0, 0, false},
-		{"b.go:x:1", "", 0, 0, false},
-		{"", "", 0, 0, false},
+		{
+			// F's body maps to p.y:10–50, X's declaration to p.y:20.
+			name: "declaration inside a body's remapped range",
+			src:  "package p\n\n//line p.y:10:1\nfunc F() int {\n\treturn 1\n//line p.y:50:1\n}\n\n//line p.y:20:1\nvar X MissingType\n",
+			pos:  "p.y:20:7",
+			decl: true,
+		},
+		{
+			// G's body statement maps to another file than the body's braces.
+			name: "body error remapped to another file",
+			src:  "package p\n\nfunc G() int {\n//line other.y:7:1\n\treturn undefinedName\n}\n",
+			pos:  "other.y:7:9",
+			decl: false,
+		},
 	} {
-		file, line, col, ok := splitErrorPos(tc.pos)
-		if file != tc.file || line != tc.line || col != tc.col || ok != tc.ok {
-			t.Errorf("splitErrorPos(%q) = %q,%d,%d,%v; want %q,%d,%d,%v", tc.pos, file, line, col, ok, tc.file, tc.line, tc.col, tc.ok)
-		}
+		t.Run(tc.name, func(t *testing.T) {
+			p := typeCheckedFile(t, "p.y", tc.src)
+			if len(p.Errors) != 1 || p.Errors[0].Pos != tc.pos {
+				t.Fatalf("fixture: errors = %v, want one at %s", p.Errors, tc.pos)
+			}
+			if got := hasDeclarationError(p); got != tc.decl {
+				t.Errorf("hasDeclarationError = %v, want %v (error %v)", got, tc.decl, p.Errors[0])
+			}
+		})
 	}
 }
