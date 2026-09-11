@@ -741,6 +741,13 @@ WHAT IT CATCHES:
   - context.WithCancel(context.Background()) where parent ctx is available
   - context.TODO() in non-test code (configurable)
 
+NOT FLAGGED:
+  - context.Background() inside a deferred cleanup, directly deferred or in
+    a deferred closure, alone or as the parent of WithTimeout:
+    defer func() { _ = tx.Rollback(context.Background()) }()
+    A defer also runs when ctx was cancelled, and passing ctx there skips
+    the cleanup exactly when it is needed; a detached context is the idiom.
+
 WHY THIS MATTERS:
   Using context.Background() when a parent context is available breaks
   the context chain — the parent's cancellation, deadline, and values

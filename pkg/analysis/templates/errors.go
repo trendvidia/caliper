@@ -66,14 +66,11 @@ func (ue *UncheckedError) includeDefers() bool {
 func (ue *UncheckedError) Analyze(ctx *TemplateContext) []Finding {
 	var findings []Finding
 
-	for _, block := range ctx.CFG.Blocks {
-		for _, node := range block.Nodes {
-			finding := ue.checkNode(ctx, block, node)
-			if finding != nil {
-				findings = append(findings, *finding)
-			}
+	sourceNodes(ctx.CFG, func(block *cfg.Block, node ast.Node) {
+		if finding := ue.checkNode(ctx, block, node); finding != nil {
+			findings = append(findings, *finding)
 		}
-	}
+	})
 
 	return findings
 }

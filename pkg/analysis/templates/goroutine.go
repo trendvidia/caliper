@@ -22,11 +22,9 @@ func (gl *GoroutineLeak) Analyze(ctx *TemplateContext) []Finding {
 
 	var findings []Finding
 
-	for _, block := range ctx.CFG.Blocks {
-		for _, node := range block.Nodes {
-			findings = append(findings, gl.checkNode(ctx, node)...)
-		}
-	}
+	sourceNodes(ctx.CFG, func(_ *cfg.Block, node ast.Node) {
+		findings = append(findings, gl.checkNode(ctx, node)...)
+	})
 
 	return findings
 }

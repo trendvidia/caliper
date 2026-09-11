@@ -7,6 +7,33 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ### Fixed
 
+- **`context_misuse` no longer flags a detached context in a deferred
+  cleanup** (#10). A deferred `Rollback`, `Close` or `Unlock` runs when
+  the function returns, including because `ctx` was cancelled or timed
+  out, so passing `ctx` there skips the cleanup exactly when it is needed
+  most — pgx's `Rollback` returns at once on a done context and leaves
+  the connection in a transaction. `context.Background()` inside a
+  `defer`, whether deferred directly, inside a deferred closure, or as
+  the parent of a `WithTimeout` there, is the recommended idiom and is
+  not reported. `context.TODO()` in a `defer` still is. Measured on the
+  repositories the issue was filed from: gameflow goes from 19 findings
+  to 1, and all 9 removed sites are deferred cleanups (four
+  `tx.Rollback` in the trader store, a migration `Rollback`, a
+  `conn.Close`, an advisory-unlock `Exec`, two deferred metric
+  decrements); govm's 5 and voya's 0 are unchanged.
+
+- **A deferred call is reported once, not twice.** The CFG lists a defer
+  statement in the block that registers it and again in a `BlockDefer`
+  block where it runs, which is how a path query sees a deferred
+  `Unlock` or `Close` on every exit; rules that scan nodes to report on
+  them saw both copies. On govm, `unchecked_error` with `include_defers`
+  gave 162 findings of which 8 were exact duplicates; on gameflow,
+  `context_misuse` gave 19 of which 9 were. Both are now 0, with the
+  same unique findings (154 and 1 respectively). Affects
+  `context_misuse`, `unchecked_error`, `goroutine_leak` and
+  `sql_injection`; `lock_violation` is unchanged, since its loop feeds
+  path queries that need both copies.
+
 - **A dependency with a type error inside a function body no longer
   drops its importers from the SSA program** (#30). The program was
   built with `ssautil.AllPackages`, which skips every package go/packages
