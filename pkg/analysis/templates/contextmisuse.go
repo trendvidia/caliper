@@ -3,6 +3,8 @@ package templates
 import (
 	"go/ast"
 	"strings"
+
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 )
 
 // ContextMisuse detects misuse of context.Context:
@@ -35,14 +37,11 @@ func (cm *ContextMisuse) Analyze(ctx *TemplateContext) []Finding {
 
 	var findings []Finding
 
-	for _, block := range ctx.CFG.Blocks {
-		for _, node := range block.Nodes {
-			f := cm.checkNode(ctx, node, hasCtxParam)
-			if f != nil {
-				findings = append(findings, *f)
-			}
+	sourceNodes(ctx.CFG, func(_ *cfg.Block, node ast.Node) {
+		if f := cm.checkNode(ctx, node, hasCtxParam); f != nil {
+			findings = append(findings, *f)
 		}
-	}
+	})
 
 	return findings
 }

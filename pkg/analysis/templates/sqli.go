@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"go/ast"
 	"strings"
+
+	"github.com/trendvidia/caliper/pkg/analysis/cfg"
 )
 
 // SQLInjection detects potential SQL injection vulnerabilities by finding
@@ -28,14 +30,11 @@ var sqlMethods = map[string]bool{
 func (si *SQLInjection) Analyze(ctx *TemplateContext) []Finding {
 	var findings []Finding
 
-	for _, block := range ctx.CFG.Blocks {
-		for _, node := range block.Nodes {
-			f := si.checkNode(ctx, node)
-			if f != nil {
-				findings = append(findings, *f)
-			}
+	sourceNodes(ctx.CFG, func(_ *cfg.Block, node ast.Node) {
+		if f := si.checkNode(ctx, node); f != nil {
+			findings = append(findings, *f)
 		}
-	}
+	})
 
 	return findings
 }
