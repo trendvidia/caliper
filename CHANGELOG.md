@@ -18,6 +18,13 @@ All notable user-visible changes to caliper. Format roughly follows
   constraint all excludes is still absent, because `./...` does not
   match it.
 
+- **`InterProceduralContext.Skipped` lists the loaded packages left out of
+  the SSA program**, each with the `Cause`: the package whose error outside
+  a function body put it out of reach. Such a package is in `Packages()`
+  and type-checked cleanly, but imports, possibly transitively, a package
+  with a declaration or syntax error, so it has no functions and no
+  call-graph edges. Before, that was silent.
+
 ## v1.5.0 — 2026-09-11
 
 ### Fixed

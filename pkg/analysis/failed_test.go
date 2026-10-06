@@ -88,3 +88,49 @@ func TestEngine_Failed(t *testing.T) {
 		})
 	}
 }
+
+// TestInterProcedural_Skipped pins which loaded packages the SSA program
+// leaves out, and the package whose error caused it: a package importing
+// one with a declaration error, directly or through another loaded
+// package. An importer of a body-only error stays, with the call into it.
+func TestInterProcedural_Skipped(t *testing.T) {
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DepsFromExportData=%v", split), func(t *testing.T) {
+			engine := failedpkgsFixture(t, EngineOptions{SkipCgo: true, DepsFromExportData: split})
+			ipc, err := engine.InterProcedural()
+			if err != nil {
+				t.Fatalf("InterProcedural: %v", err)
+			}
+
+			got := map[string]string{}
+			for _, s := range ipc.Skipped {
+				got[s.Package.PkgPath] = s.Cause.PkgPath
+				if ipc.Program.Package(s.Package.Types) != nil {
+					t.Errorf("%s: in Skipped and in the SSA program", s.Package.PkgPath)
+				}
+			}
+			want := map[string]string{
+				"failedpkgs/usesdecl":     "failedpkgs/declerr",
+				"failedpkgs/usesusesdecl": "failedpkgs/declerr",
+			}
+			if fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("Skipped = %v, want %v", got, want)
+			}
+
+			use := ipc.FindFunctionByName("failedpkgs/usesbody", "Use")
+			if use == nil {
+				t.Fatal("usesbody.Use is not in the SSA program")
+			}
+			var callees []string
+			for _, c := range ipc.CalleesOf(use) {
+				callees = append(callees, c.String())
+				if len(c.Blocks) != 0 {
+					t.Errorf("%s has a body; a package with a body error is created from its types alone", c)
+				}
+			}
+			if want := []string{"failedpkgs/bodyerr.Good"}; !slices.Equal(callees, want) {
+				t.Errorf("callees of usesbody.Use = %v, want %v", callees, want)
+			}
+		})
+	}
+}
