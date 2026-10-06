@@ -11,6 +11,8 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"maps"
+	"slices"
 	"strings"
 
 	"golang.org/x/tools/go/callgraph"
@@ -48,6 +50,24 @@ type InterProceduralContext struct {
 	SSAPkgs   []*ssa.Package
 	CallGraph *callgraph.Graph
 	Algorithm CallGraphAlgorithm
+
+	// Skipped lists the packages of [Engine.Packages] that are not in
+	// Program, in load order. Each type-checked cleanly, but imports,
+	// possibly transitively, a package with an error outside a function
+	// body, and SSA cannot be built on declarations the type checker did
+	// not finish; see createProgram. Such a package has no functions in
+	// Program and no edges in CallGraph.
+	Skipped []SkippedPackage
+}
+
+// SkippedPackage is a loaded package left out of the SSA program, and why.
+type SkippedPackage struct {
+	Package *packages.Package
+	// Cause is the package whose error put Package out of reach: the
+	// first broken import on the path from Package, which has an error
+	// outside a function body itself. It may be a package of
+	// [Engine.Failed] or a dependency outside the load's patterns.
+	Cause *packages.Package
 }
 
 // CallSite describes a location where a function is called.
@@ -64,7 +84,7 @@ type CallSite struct {
 // default and works on library code without a main function.
 func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *InterProceduralContext, err error) {
 	// Build SSA program from all loaded packages.
-	prog, ssaPkgs := createProgram(engine, ssa.SanityCheckFunctions)
+	prog, ssaPkgs, skipped := createProgram(engine, ssa.SanityCheckFunctions)
 
 	// prog.Build() panics on an inconsistent program — most often
 	// "unsatisfied import: Program.CreatePackage(X) was not called" when a
@@ -101,6 +121,7 @@ func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *
 		SSAPkgs:   nonNil,
 		CallGraph: cg,
 		Algorithm: usedAlgo,
+		Skipped:   skipped,
 	}, nil
 }
 
@@ -137,25 +158,38 @@ func BuildInterProceduralContext(engine *Engine, algo CallGraphAlgorithm) (ipc *
 //     the importer.
 //   - everything else is created from its syntax: the loaded packages,
 //     and under the default load the dependencies too.
-func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.Package) {
+//
+// It also returns the loaded packages it skipped, each with the package
+// whose error caused it.
+func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.Package, []SkippedPackage) {
 	prog := ssa.NewProgram(engine.fset, mode)
 	roots := make(map[*packages.Package]bool, len(engine.pkgs))
 	for _, p := range engine.pkgs {
 		roots[p] = true
 	}
-	broken := make(map[*packages.Package]bool)
+	// broken maps a broken package to the package with a declaration
+	// error that broke it, itself if it has one.
+	broken := make(map[*packages.Package]*packages.Package)
 	// Visit runs post-order, so a package's imports are classified
-	// before it is.
+	// before it is. Imports is a map; its keys are sorted so the cause
+	// reported for a package with several broken imports is stable.
 	packages.Visit(engine.pkgs, nil, func(p *packages.Package) {
-		b := hasDeclarationError(p)
-		for _, imp := range p.Imports {
-			if broken[imp] {
-				b = true
-				break
+		var cause *packages.Package
+		if hasDeclarationError(p) {
+			cause = p
+		} else {
+			for _, path := range slices.Sorted(maps.Keys(p.Imports)) {
+				if c := broken[p.Imports[path]]; c != nil {
+					cause = c
+					break
+				}
 			}
 		}
-		broken[p] = b
-		if b || p.Types == nil {
+		if cause != nil {
+			broken[p] = cause
+			return
+		}
+		if p.Types == nil {
 			return
 		}
 		typesOnly := hasNonDriverError(p) || (engine.opts.DepsFromExportData && !roots[p])
@@ -166,12 +200,16 @@ func createProgram(engine *Engine, mode ssa.BuilderMode) (*ssa.Program, []*ssa.P
 		}
 	})
 	ssaPkgs := make([]*ssa.Package, len(engine.pkgs))
+	var skipped []SkippedPackage
 	for i, p := range engine.pkgs {
 		if p.Types != nil {
 			ssaPkgs[i] = prog.Package(p.Types) // nil when skipped
 		}
+		if cause := broken[p]; cause != nil {
+			skipped = append(skipped, SkippedPackage{Package: p, Cause: cause})
+		}
 	}
-	return prog, ssaPkgs
+	return prog, ssaPkgs, skipped
 }
 
 // hasNonDriverError reports whether p carries an error other than one the

@@ -20,6 +20,7 @@ import (
 type Engine struct {
 	fset    *token.FileSet
 	pkgs    []*packages.Package
+	failed  []*packages.Package
 	opts    EngineOptions
 	ipcOnce sync.Once
 	ipc     *InterProceduralContext
@@ -224,24 +225,15 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	// Filter out packages with errors but keep those that loaded successfully.
 	// This is important for large codebases (like stdlib) where some packages
 	// may fail due to build constraints, cgo, or platform-specific code.
-	var validPkgs []*packages.Package
-	for _, pkg := range pkgs {
-		if len(pkg.Errors) == 0 && pkg.Types != nil {
-			validPkgs = append(validPkgs, pkg)
-		}
-	}
+	validPkgs, failed := splitLoaded(pkgs)
 
 	// If ALL packages failed, check if a go.work might be interfering
 	// and retry with GOWORK=off.
 	if len(validPkgs) == 0 && !hasEnv(cfg.Env, "GOWORK=off") {
 		cfg.Env = append(append(os.Environ(), "GOWORK=off"), opts.Env...)
-		pkgs, err = packages.Load(cfg, patterns...)
-		if err == nil {
-			for _, pkg := range pkgs {
-				if len(pkg.Errors) == 0 && pkg.Types != nil {
-					validPkgs = append(validPkgs, pkg)
-				}
-			}
+		if retry, err := packages.Load(cfg, patterns...); err == nil {
+			pkgs = retry
+			validPkgs, failed = splitLoaded(pkgs)
 		}
 	}
 
@@ -255,10 +247,24 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 	pkgs = validPkgs
 
 	return &Engine{
-		fset: pkgs[0].Fset,
-		pkgs: pkgs,
-		opts: opts,
+		fset:   pkgs[0].Fset,
+		pkgs:   pkgs,
+		failed: failed,
+		opts:   opts,
 	}, nil
+}
+
+// splitLoaded separates the packages a load matched into those that
+// type-checked cleanly and those that did not.
+func splitLoaded(pkgs []*packages.Package) (valid, failed []*packages.Package) {
+	for _, pkg := range pkgs {
+		if len(pkg.Errors) == 0 && pkg.Types != nil {
+			valid = append(valid, pkg)
+		} else {
+			failed = append(failed, pkg)
+		}
+	}
+	return valid, failed
 }
 
 // detectPatterns determines the right package patterns for the given directory.
@@ -526,6 +532,24 @@ func (e *Engine) Fset() *token.FileSet { return e.fset }
 
 // Packages returns all loaded packages.
 func (e *Engine) Packages() []*packages.Package { return e.pkgs }
+
+// Failed returns the packages the load matched but [Engine.Packages]
+// leaves out because they have errors, in load order, each with its
+// Errors. A caller that describes the whole module needs them to tell a
+// package that failed from one that does not exist; caliper's own checks
+// never see them.
+//
+// go/packages fills in what it could of each: Syntax for the files that
+// parsed, and for a package that type-checked in part, a Types scope and
+// TypesInfo covering the declarations the checker resolved. None of it is
+// in the SSA program as a loaded package. One whose errors all lie inside
+// function bodies is there as a dependency of the packages importing it,
+// from its types alone, so calls into it resolve and calls out of it do
+// not exist; see [InterProceduralContext.Skipped] for the rest.
+//
+// A directory whose every file a build constraint excludes is not here:
+// the ./... pattern does not match it, so the load never sees it.
+func (e *Engine) Failed() []*packages.Package { return e.failed }
 
 // FileLocation describes a position in source code.
 type FileLocation struct {
