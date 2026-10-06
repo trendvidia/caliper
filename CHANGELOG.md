@@ -3,6 +3,21 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Added
+
+- **`Engine.Failed()` returns the packages the load dropped** (#38).
+  `Packages()` leaves out every package with errors, and until now
+  nothing recorded that they existed, so a caller describing the whole
+  module could not tell a package that failed from one that does not
+  exist. `Failed()` returns them with their `Errors` and whatever
+  go/packages kept: the syntax that parsed, and for a partly
+  type-checked package, the `Types` scope and `TypesInfo` of the
+  declarations that resolved. A directory whose files a build
+  constraint all excludes is still absent, because `./...` does not
+  match it.
+
 ## v1.5.0 — 2026-09-11
 
 ### Fixed
