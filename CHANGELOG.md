@@ -3,7 +3,7 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## Unreleased
+## v1.6.1 — 2026-10-08
 
 ### Fixed
 
