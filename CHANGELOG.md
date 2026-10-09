@@ -3,6 +3,18 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **The call graph no longer panics on a method with type parameters**
+  (#40). Go 1.27 allows methods with type parameters of their own, and
+  the standard library has one, `math/rand/v2`'s `(*Rand).N`. Any
+  program that reached such a method made `BuildInterProceduralContext`
+  panic with the type parameter's name (`panic: Int`) inside x/tools'
+  `Program.RuntimeTypes`. caliper now requires x/tools v0.51.0, which
+  skips those methods there; calls to them are edges in the graph.
+
 ## v1.6.0 — 2026-10-05
 
 ### Added
