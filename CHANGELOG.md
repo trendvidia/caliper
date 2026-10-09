@@ -15,6 +15,11 @@ All notable user-visible changes to caliper. Format roughly follows
   `Program.RuntimeTypes`. caliper now requires x/tools v0.51.0, which
   skips those methods there; calls to them are edges in the graph.
 
+- **The export-data load works on go-plus 1.27.2.** With x/tools
+  v0.44.0, `DepsFromExportData` on a module importing the standard
+  library ended the process with `internal error: package "fmt" without
+  types was imported from ...`. The x/tools v0.51.0 bump above fixes it.
+
 - **A panic during call graph construction is returned as an error.**
   `BuildInterProceduralContext` used to let it end the process; the
   next input x/tools cannot handle now fails the build of the context
