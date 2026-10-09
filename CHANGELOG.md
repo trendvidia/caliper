@@ -15,6 +15,11 @@ All notable user-visible changes to caliper. Format roughly follows
   `Program.RuntimeTypes`. caliper now requires x/tools v0.51.0, which
   skips those methods there; calls to them are edges in the graph.
 
+- **A panic during call graph construction is returned as an error.**
+  `BuildInterProceduralContext` used to let it end the process; the
+  next input x/tools cannot handle now fails the build of the context
+  instead.
+
 ## v1.6.0 — 2026-10-05
 
 ### Added

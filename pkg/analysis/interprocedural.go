@@ -345,7 +345,17 @@ func (ipc *InterProceduralContext) IsGeneratedFunc(fn *ssa.Function) bool {
 	return ipc.Engine.IsGeneratedFile(ipc.Engine.Fset().Position(pos).Filename)
 }
 
-func buildCallGraph(prog *ssa.Program, pkgs []*ssa.Package, algo CallGraphAlgorithm) (*callgraph.Graph, CallGraphAlgorithm, error) {
+// buildCallGraph runs the selected algorithm. A panic inside it is
+// returned as an error: the algorithms and Program.RuntimeTypes run on
+// this goroutine, and a construct x/tools does not handle yet — methods
+// with type parameters, before v0.51.0 (#40) — should fail the build of
+// the context, not the process.
+func buildCallGraph(prog *ssa.Program, pkgs []*ssa.Package, algo CallGraphAlgorithm) (cg *callgraph.Graph, used CallGraphAlgorithm, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			cg, err = nil, fmt.Errorf("call graph construction panicked: %v", r)
+		}
+	}()
 	switch algo {
 	case AlgoRTA:
 		// RTA needs at least one root function (main or init).
@@ -360,19 +370,16 @@ func buildCallGraph(prog *ssa.Program, pkgs []*ssa.Package, algo CallGraphAlgori
 		}
 		if len(roots) == 0 {
 			// Fall back to CHA — no main/init found.
-			cg := cha.CallGraph(prog)
-			return cg, AlgoCHA, nil
+			return cha.CallGraph(prog), AlgoCHA, nil
 		}
 		result := rta.Analyze(roots, true)
 		return result.CallGraph, AlgoRTA, nil
 
 	case AlgoVTA:
-		cg := vta.CallGraph(ssautil.AllFunctions(prog), nil)
-		return cg, AlgoVTA, nil
+		return vta.CallGraph(ssautil.AllFunctions(prog), nil), AlgoVTA, nil
 
 	default: // AlgoCHA
-		cg := cha.CallGraph(prog)
-		return cg, AlgoCHA, nil
+		return cha.CallGraph(prog), AlgoCHA, nil
 	}
 }
 

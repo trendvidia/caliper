@@ -63,3 +63,17 @@ func TestBuildInterProceduralContext_GenericMethods(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildCallGraph_PanicIsError pins that a panic inside call graph
+// construction comes back as an error rather than ending the process: a
+// nil program stands in for the next input x/tools cannot handle.
+func TestBuildCallGraph_PanicIsError(t *testing.T) {
+	for _, algo := range []CallGraphAlgorithm{AlgoCHA, AlgoRTA, AlgoVTA} {
+		cg, _, err := buildCallGraph(nil, nil, algo)
+		if err == nil || cg != nil {
+			t.Errorf("algo=%d: buildCallGraph(nil) = %v, %v; want nil graph and an error", algo, cg, err)
+		} else {
+			t.Logf("algo=%d: %v", algo, err)
+		}
+	}
+}
