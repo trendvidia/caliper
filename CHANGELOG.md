@@ -3,6 +3,28 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Fixed
+
+- **The call graph no longer panics on a method with type parameters**
+  (#40). Go 1.27 allows methods with type parameters of their own, and
+  the standard library has one, `math/rand/v2`'s `(*Rand).N`. Any
+  program that reached such a method made `BuildInterProceduralContext`
+  panic with the type parameter's name (`panic: Int`) inside x/tools'
+  `Program.RuntimeTypes`. caliper now requires x/tools v0.51.0, which
+  skips those methods there; calls to them are edges in the graph.
+
+- **The export-data load works on go-plus 1.27.2.** With x/tools
+  v0.44.0, `DepsFromExportData` on a module importing the standard
+  library ended the process with `internal error: package "fmt" without
+  types was imported from ...`. The x/tools v0.51.0 bump above fixes it.
+
+- **A panic during call graph construction is returned as an error.**
+  `BuildInterProceduralContext` used to let it end the process; the
+  next input x/tools cannot handle now fails the build of the context
+  instead.
+
 ## v1.6.0 — 2026-10-05
 
 ### Added
