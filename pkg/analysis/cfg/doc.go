@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package cfg builds control flow graphs from Go functions and provides
 // path-level analysis primitives — the engine behind Caliper's
 // control-flow-aware tools.

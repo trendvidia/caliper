@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package templates
 
 // Shared helpers for the whole-program, type-scoped templates

@@ -1,4 +1,7 @@
 #!/usr/bin/env bash
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 TrendVidia, LLC.
+
 # Builds caliper's release binaries for every supported platform into a
 # directory, with a checksums.txt beside them. The release workflow runs
 # this; running it by hand gives the same files.

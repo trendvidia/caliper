@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package cfg
 
 // This file implements natural loop detection in CFGs using dominator analysis.

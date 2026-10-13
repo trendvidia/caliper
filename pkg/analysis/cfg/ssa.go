@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package cfg — SSA-based CFG construction.
 //
 // This file provides an alternative CFG backend using golang.org/x/tools/go/ssa.

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package mcp
 
 // All MCP tool handler implementations: read-only analyses (find_*,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package patterns implements AST pattern matching with metavariables
 // for Go source code.
 //

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package templates provides pre-built analysis templates that encapsulate
 // complex control-flow properties behind simple, parameterized interfaces.
 //

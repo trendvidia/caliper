@@ -5,6 +5,15 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Changed
+
+- **Every source file carries its license header**:
+  `SPDX-License-Identifier: MIT` and the copyright line. The generated
+  protobuf Go gets it from its `.proto`. Test fixtures under `testdata`
+  are left as they were.
+- The copyright holder in `LICENSE` is spelled "TrendVidia, LLC.", as in
+  the organization's other repositories.
+
 ## v1.6.2 — 2026-10-13
 
 ### Changed

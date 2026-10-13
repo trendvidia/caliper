@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Command caliper-analyze is the single-shot CLI counterpart to caliper-mcp.
 //
 // Where caliper-mcp is a long-lived stdio JSON-RPC server intended for
