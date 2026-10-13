@@ -16,6 +16,17 @@ All notable user-visible changes to caliper. Format roughly follows
   Go and go-plus give the same result locally: 379 tests run, 379 pass,
   none skipped.
 
+### Build
+
+- **Every release gets its binaries again.** v1.4.0 through v1.6.1
+  shipped none, though the install docs promised them. A release
+  workflow now runs `scripts/build-release.sh` when a release is
+  published, for macOS / Linux / Windows × amd64 / arm64, with a
+  `checksums.txt`. Binaries are built with Go 1.27.2, the newest Go
+  caliper supports, because a binary refuses a newer `go` command than
+  the one it was built with (#35). v1.6.1's binaries were added after
+  the fact with the same script.
+
 ## v1.6.1 — 2026-10-08
 
 ### Fixed
