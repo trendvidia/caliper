@@ -6,17 +6,26 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+# GitHub-hosted runners only. A public repository must not route jobs to a
+# self-hosted runner: a fork's pull request runs the workflow file from the
+# fork, so it can pick any runner label the repository has.
 jobs:
   test:
-    name: vet + build + test
-    runs-on: [self-hosted, macOS, ARM64]
+    name: vet + build + test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@v5
 
-      - name: Assert go-plus toolchain
-        run: |
-          go version
-          go version | grep -qE '\(plus[ )]' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
 
       - name: gofmt
         run: |
@@ -38,14 +47,13 @@ jobs:
 
   lint:
     name: golangci-lint
-    runs-on: [self-hosted, macOS, ARM64]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
-      - name: Assert go-plus toolchain
-        run: |
-          go version
-          go version | grep -qE '\(plus[ )]' || { echo "::error::runner go is not the go-plus fork"; exit 1; }
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
 
       - uses: golangci/golangci-lint-action@v8
         with:

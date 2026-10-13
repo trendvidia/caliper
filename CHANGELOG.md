@@ -3,6 +3,19 @@
 All notable user-visible changes to caliper. Format roughly follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## Unreleased
+
+### Changed
+
+- **Caliper is MIT-licensed, with a `LICENSE` file at the root.** The
+  contributor agreement already said so; the repository did not.
+- Install docs no longer assume a private repository: no `GOPRIVATE`,
+  no authenticated release downloads, no private Homebrew tap.
+- CI runs on GitHub-hosted Ubuntu and macOS runners with stock Go
+  1.27.2, replacing the self-hosted runner and its go-plus check. Stock
+  Go and go-plus give the same result locally: 379 tests run, 379 pass,
+  none skipped.
+
 ## v1.6.1 — 2026-10-08
 
 ### Fixed
