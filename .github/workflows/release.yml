@@ -1,0 +1,54 @@
+name: Release binaries
+
+# Attaches binaries to a GitHub release. Runs when a release is published,
+# or by hand for an existing tag. A pull request that touches the build
+# builds everything without uploading.
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to build and upload, e.g. v1.6.1
+        required: true
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/release.yml
+      - scripts/build-release.sh
+
+permissions:
+  contents: read
+
+jobs:
+  binaries:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ github.event.release.tag_name || inputs.tag || 'dev' }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || env.TAG }}
+
+      # Keep in step with ci.yml. The binaries refuse a newer minor Go
+      # than the one that built them, so this is the newest supported.
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.27.2'
+
+      - name: build
+        run: scripts/build-release.sh "$TAG" dist
+
+      - name: smoke test
+        run: |
+          ./dist/caliper-analyze-linux-amd64 -version
+          ./dist/caliper-analyze-linux-amd64 -version | grep -qxF "$TAG"
+          (cd dist && sha256sum -c checksums.txt)
+
+      - name: upload
+        if: github.event_name != 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" dist/* --clobber --repo "$GITHUB_REPOSITORY"
