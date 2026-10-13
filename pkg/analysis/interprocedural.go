@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Inter-procedural analysis context for Caliper.
 //
 // This file provides the call graph infrastructure needed for cross-function

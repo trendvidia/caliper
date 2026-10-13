@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Cross-function metavariable binding for Caliper.
 //
 // This implements Coccinelle's rule chaining across files: match a function

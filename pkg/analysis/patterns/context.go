@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Enclosing-context predicates for pattern matches.
 //
 // Some rules are about the *context* of a call site rather than a path

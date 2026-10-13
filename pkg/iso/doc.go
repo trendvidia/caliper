@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package iso defines Go-specific isomorphisms (equivalences) that expand
 // patterns to match semantically equivalent code forms.
 //

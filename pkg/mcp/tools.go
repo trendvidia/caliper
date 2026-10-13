@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package mcp
 
 // This file defines every MCP tool that Caliper exposes.

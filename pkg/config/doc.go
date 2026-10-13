@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 // Package config handles loading and applying .caliper.pxf configuration.
 //
 // The config file lets users customize severity levels, enable/disable

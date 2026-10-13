@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package templates
 
 // ByKind returns a canonical Template instance for the given rule kind,

@@ -1,3 +1,6 @@
+// SPDX-License-Identifier: MIT
+// Copyright (c) 2026 TrendVidia, LLC.
+
 package templates
 
 // StaleCapture: capture-at-create vs re-read-at-refresh (issue #8).
