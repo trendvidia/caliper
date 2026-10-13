@@ -65,6 +65,14 @@ Download `caliper-windows-amd64.exe` (or `-arm64.exe`) from the
 [releases page](https://github.com/trendvidia/caliper/releases), rename
 it to `caliper.exe`, and add its directory to your `PATH`.
 
+### Homebrew
+
+```bash
+brew install trendvidia/tap/caliper
+```
+
+Installs `caliper` and `caliper-analyze`.
+
 ### From Source
 
 ```bash

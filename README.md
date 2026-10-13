@@ -4,6 +4,17 @@ Semantic code analysis and transformation tool for Go, inspired by [Coccinelle](
 
 ## Install
 
+### Homebrew
+
+```bash
+brew install trendvidia/tap/caliper
+```
+
+This installs both binaries: `caliper` (the MCP server) and
+`caliper-analyze`.
+
+### From source
+
 Caliper ships two binaries — the MCP server, and a single-shot CLI for
 CI use:
 
@@ -24,13 +35,14 @@ Register Caliper as an MCP server using the `claude mcp add` command:
 
 ```bash
 # Available across all your projects
-claude mcp add --scope user caliper -- $(go env GOPATH)/bin/caliper-mcp
+claude mcp add --scope user caliper -- $(brew --prefix)/bin/caliper
 
 # Or for a single project only
-claude mcp add caliper -- $(go env GOPATH)/bin/caliper-mcp
+claude mcp add caliper -- $(brew --prefix)/bin/caliper
 ```
 
-If you installed a prebuilt binary, use its full path instead.
+If you used `go install`, the path is `$(go env GOPATH)/bin/caliper-mcp`;
+for a prebuilt binary, use its full path.
 
 After adding, restart Claude Code for the MCP server to be loaded.
 

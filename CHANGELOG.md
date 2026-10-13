@@ -10,7 +10,9 @@ All notable user-visible changes to caliper. Format roughly follows
 - **Caliper is MIT-licensed, with a `LICENSE` file at the root.** The
   contributor agreement already said so; the repository did not.
 - Install docs no longer assume a private repository: no `GOPRIVATE`,
-  no authenticated release downloads, no private Homebrew tap.
+  no authenticated release downloads, and `brew install
+  trendvidia/tap/caliper` without `HOMEBREW_GITHUB_API_TOKEN` (the tap
+  is public too).
 - CI runs on GitHub-hosted Ubuntu and macOS runners with stock Go
   1.27.2, replacing the self-hosted runner and its go-plus check. Stock
   Go and go-plus give the same result locally: 379 tests run, 379 pass,
