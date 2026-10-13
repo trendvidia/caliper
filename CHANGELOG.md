@@ -5,6 +5,8 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+## v1.6.2 — 2026-10-13
+
 ### Changed
 
 - **Caliper is MIT-licensed, with a `LICENSE` file at the root.** The
