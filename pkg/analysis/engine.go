@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 
@@ -108,6 +109,17 @@ type EngineOptions struct {
 	// the call-graph edges among the loaded packages are the same under
 	// both modes.
 	DepsFromExportData bool
+
+	// KeepWhenAllFail returns an engine when no package the load matched
+	// type-checked, instead of the error "package errors: …" (default:
+	// false). [Engine.Packages] is then empty and [Engine.Failed] holds
+	// every package with its errors. A caller loading a few packages of a
+	// module — the ones a worktree changed, laid over a graph of the rest
+	// — wants a broken one described as a load of the whole module would
+	// describe it, where the module's clean packages keep the load alive
+	// (belluikit/alidade#41). A load none of whose packages has a Go
+	// file — a pattern naming no directory — is still an error.
+	KeepWhenAllFail bool
 
 	// pathRemap remaps file paths in output (internal, set by engine).
 	pathRemap *pathRemap
@@ -240,6 +252,9 @@ func NewEngineWithOptions(dir string, opts EngineOptions, patterns ...string) (*
 		}
 	}
 
+	if len(validPkgs) == 0 && opts.KeepWhenAllFail && slices.ContainsFunc(failed, func(p *packages.Package) bool { return len(p.GoFiles) > 0 }) {
+		return &Engine{fset: failed[0].Fset, failed: failed, opts: opts}, nil
+	}
 	if len(validPkgs) == 0 {
 		if len(pkgs) > 0 && len(pkgs[0].Errors) > 0 {
 			return nil, fmt.Errorf("package errors: %v", pkgs[0].Errors[0])

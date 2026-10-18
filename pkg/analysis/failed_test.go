@@ -137,3 +137,42 @@ func TestInterProcedural_Skipped(t *testing.T) {
 		})
 	}
 }
+
+// TestEngine_KeepWhenAllFail pins belluikit/alidade#41: a load whose
+// every package fails is an error by default, and with KeepWhenAllFail
+// an engine with no packages and every one of them in Failed, whose call
+// graph is an error rather than a panic.
+func TestEngine_KeepWhenAllFail(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.CopyFS(dir, os.DirFS(filepath.Join("testdata", "failedpkgs"))); err != nil {
+		t.Fatal(err)
+	}
+	for _, split := range []bool{false, true} {
+		t.Run(fmt.Sprintf("DepsFromExportData=%v", split), func(t *testing.T) {
+			opts := EngineOptions{SkipCgo: true, DepsFromExportData: split}
+			if _, err := NewEngineWithOptions(dir, opts, "./bodyerr", "./declerr"); err == nil {
+				t.Error("a load of failing packages alone loaded without KeepWhenAllFail")
+			}
+			opts.KeepWhenAllFail = true
+			engine, err := NewEngineWithOptions(dir, opts, "./bodyerr", "./declerr")
+			if err != nil {
+				t.Fatalf("KeepWhenAllFail: %v", err)
+			}
+			if got := pkgPaths(engine.Packages()); len(got) != 0 {
+				t.Errorf("Packages() = %v, want none", got)
+			}
+			if got, want := pkgPaths(engine.Failed()), []string{"failedpkgs/bodyerr", "failedpkgs/declerr"}; !slices.Equal(got, want) {
+				t.Errorf("Failed() = %v, want %v", got, want)
+			}
+			if engine.Fset() == nil {
+				t.Error("Fset() is nil")
+			}
+			if _, err := BuildInterProceduralContext(engine, AlgoCHA); err == nil {
+				t.Error("a call graph of no packages built")
+			}
+			if _, err := NewEngineWithOptions(dir, opts, "./nosuchdir"); err == nil {
+				t.Error("a load matching no package loaded under KeepWhenAllFail")
+			}
+		})
+	}
+}

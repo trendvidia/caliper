@@ -5,6 +5,17 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Added
+
+- **`EngineOptions.KeepWhenAllFail`**: a load in which no package
+  type-checks returns an engine instead of the error `package errors:
+  …`. `Packages()` is empty and `Failed()` holds every package with its
+  errors. It is for callers that load a few packages of a module and
+  want a broken one described as a whole module's load would describe
+  it: alidade reloading a worktree's changed packages
+  (belluikit/alidade#41). A load none of whose packages has a Go file
+  is still an error. Off by default.
+
 ### Changed
 
 - **Every source file carries its license header**:
