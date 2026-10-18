@@ -5,6 +5,8 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+## v1.7.0 — 2026-10-18
+
 ### Added
 
 - **`EngineOptions.KeepWhenAllFail`**: a load in which no package
