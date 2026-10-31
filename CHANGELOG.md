@@ -5,6 +5,20 @@ All notable user-visible changes to caliper. Format roughly follows
 
 ## Unreleased
 
+### Changed
+
+- **`github.com/trendvidia/protowire-go` v1.3.2 → v1.13.0.** A
+  `.caliper.pxf` or `.gcl` file that binds one thing twice is now an
+  error at load, where the later value used to win or two blocks used to
+  merge, so one setting was silently lost. That covers a singular field
+  set twice, a block such as `engine { }` written twice, and one map key
+  set twice. Repeated fields still concatenate and distinct map keys
+  still merge. Every example in the README and getting-started guide
+  decodes as it did.
+- The `go` directive rises from 1.26.1 to 1.26.2, the floor protowire-go
+  v1.13.0 declares. `google.golang.org/protobuf` moves to v1.36.12 and
+  `golang.org/x/sync` to v0.24.0.
+
 ## v1.7.0 — 2026-10-18
 
 ### Added
