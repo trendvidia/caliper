@@ -160,3 +160,48 @@ func TestGCLPatterns_NilConfig(t *testing.T) {
 		t.Errorf("expected empty, got %v", files)
 	}
 }
+
+// A .caliper.pxf that binds one thing twice is refused. protowire-go v1.3.2
+// kept the last value and merged repeated blocks, so one of the two settings
+// was silently lost; v1.11.0 and v1.12.0 made these errors. Repeated fields
+// still concatenate, and distinct map keys across two bindings still merge.
+func TestLoad_DuplicateBindings(t *testing.T) {
+	refused := map[string]string{
+		"singular field": "defaults { path = \"a\"\n path = \"b\" }\n",
+		"block":          "engine { skip_cgo = true }\nengine { skip_generated = true }\n",
+		"map key":        "severity = { resource_leak: \"error\"\n resource_leak: \"info\" }\n",
+	}
+	for name, data := range refused {
+		t.Run(name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := os.WriteFile(filepath.Join(dir, ".caliper.pxf"), []byte(data), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := Load(dir); err == nil {
+				t.Fatalf("expected an error for %q", data)
+			}
+		})
+	}
+
+	t.Run("repeated and distinct keys still merge", func(t *testing.T) {
+		dir := t.TempDir()
+		data := "patterns = [\"a.gcl\"]\npatterns = [\"b.gcl\"]\n" +
+			"severity = { resource_leak: \"error\" }\nseverity = { unchecked_error: \"info\" }\n"
+		if err := os.WriteFile(filepath.Join(dir, ".caliper.pxf"), []byte(data), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cfg, err := Load(dir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := len(cfg.pb.Patterns); got != 2 {
+			t.Errorf("patterns: got %d, want 2", got)
+		}
+		if got := cfg.SeverityFor("resource_leak", ""); got != "error" {
+			t.Errorf("resource_leak: got %q", got)
+		}
+		if got := cfg.SeverityFor("unchecked_error", ""); got != "info" {
+			t.Errorf("unchecked_error: got %q", got)
+		}
+	})
+}
